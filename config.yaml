@@ -1,0 +1,38 @@
+input:
+  path: "data/1000_centromeres.tsv"
+  format: auto
+
+output:
+  dir: "output"
+
+preprocess:
+  merge_max_distance: 5000
+
+filter:
+  min_length: 80
+  min_gc: 0.05
+
+align:
+  mafft_args: "--auto"
+  workers: 4
+
+visualize:
+  formats: ["pdf", "png"]
+  dpi: 300
+  centromere_order:
+    - CEN1
+    - CEN2
+    - CEN3
+    - CEN4
+    - CEN5
+    - CEN6
+    - CEN7
+    - CEN8
+    - CEN9
+    - CEN10
+    - CEN11
+    - CEN12
+    - CEN13
+    - CEN14
+    - CEN15
+    - CEN16
