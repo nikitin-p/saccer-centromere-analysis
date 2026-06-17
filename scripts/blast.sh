@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-QUERY="data/sacer_centromere.fasta"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-GENOME_DIR="genome_assemblies"
-DB_DIR="blast_db_genome_assemblies"
-RESULTS_DIR="blast_results"
-COMBINED_OUTPUT="data/1000_centromeres.tsv"
+QUERY="${QUERY:-$SCRIPT_DIR/data/sacer_centromere.fasta}"
+GENOME_DIR="${GENOME_DIR:-genome_assemblies}"
+DB_DIR="${DB_DIR:-blast_db_genome_assemblies}"
+RESULTS_DIR="${RESULTS_DIR:-blast_results}"
+COMBINED_OUTPUT="${COMBINED_OUTPUT:-centromeres.tsv}"
 
 mkdir -p "$DB_DIR"
 mkdir -p "$RESULTS_DIR"
