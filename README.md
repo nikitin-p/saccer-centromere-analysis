@@ -146,6 +146,9 @@ The primary dataset (`1000_centromeres.tsv`) is derived from the [1011 yeast gen
 - [Yue et al. 2017](https://www.nature.com/articles/ng.3847): Domesticated vs wild yeast genomes, Ty elements
 - [Dunn et al. 2012](https://genome.cshlp.org/content/22/5/908): Pan-genome copy number variants
 
+**Phenotype Data:**
+- `Phenotypes_8391Traits/` from [Loegler et al. 2025](https://www.nature.com/articles/s41586-025-09637-0): Growth traits (~241 conditions including DNA damage), RNA-seq (~6000 genes), protein abundance (~2148 proteins). Strain IDs match FASTA headers. Potential to correlate centromere variants with fitness under genotoxic stress or kinetochore gene expression.
+
 ## License
 
 MIT
