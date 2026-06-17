@@ -127,6 +127,20 @@ pytest tests/ -v
 
 The primary dataset (`1000_centromeres.tsv`) is derived from the [1011 yeast genomes](https://www.nature.com/articles/s41586-018-0030-5) (Peter et al. 2018).
 
+### Sample Metadata
+
+Two supplementary files in `data/` provide strain metadata:
+
+| File | Source | Content |
+|------|--------|---------|
+| `41586_2018_30_MOESM3_ESM.xls` | Peter et al. 2018 | Ecological/geographical origins, phylogenetic clades (26 clades including Wine/European, Sake, Brazilian bioethanol) |
+| `41586_2025_9637_MOESM3_ESM.xlsx` | Loegler et al. 2025 | Sequencing stats, assembly quality (MerquryQV, BUSCO scores), filenames |
+
+**949 samples (87%)** can be linked between datasets via `Standardized name`, enabling analyses like:
+- Comparing centromere variation across ecological niches (wine vs. clinical vs. wild)
+- Geographic structure of centromere variants
+- Clade-specific centromere signatures
+
 ### Potential Additional Sources
 
 **T2T Assemblies for S. cerevisiae:**
