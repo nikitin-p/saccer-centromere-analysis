@@ -1,9 +1,9 @@
 input:
-  path: "centromeres.tsv"
+  path: "../centromeres.tsv"
   format: auto
 
 output:
-  dir: "output"
+  dir: "../output"
 
 preprocess:
   merge_max_distance: 5000
