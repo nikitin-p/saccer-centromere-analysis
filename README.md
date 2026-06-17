@@ -121,6 +121,31 @@ pytest tests/ -v
 └── config.yaml           # Pipeline configuration
 ```
 
+## Data Sources
+
+### Current Data
+
+The primary dataset (`1000_centromeres.tsv`) is derived from the [1011 yeast genomes](https://www.nature.com/articles/s41586-018-0030-5) (Peter et al. 2018).
+
+### Potential Additional Sources
+
+**T2T Assemblies for S. cerevisiae:**
+- **1086 strains** — [Loegler et al. 2025](https://www.nature.com/articles/s41586-025-09637-0): Near-T2T assemblies with pangenome and structural variant atlas
+- **142 strains (ScRAP)** — [O'Donnell et al. 2023](https://www.nature.com/articles/s41588-023-01459-y): Reference-quality T2T assemblies
+
+**Other Saccharomyces Species:**
+- [Scannell et al. 2011](https://academic.oup.com/g3journal/article/1/1/11/5986445): *S. sensu stricto* (5 species) — SRP006340
+- [Kellis et al. 2003](https://www.nature.com/articles/nature01644): Comparative genomics of 4 species
+- [Hession et al. 2025](https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1011814): Centromere evolution in 9 budding yeast species (Hi-C + ChIP-seq)
+
+**ChIP-seq / Chromatin:**
+- [Henikoff 2012](https://www.pnas.org/doi/10.1073/pnas.1118898109): Tripartite centromeric chromatin organization
+- [Zhang et al. 2024](https://academic.oup.com/genetics/article/228/1/iyae108/7710407): Cse4/CENP-A localization
+
+**Transposon Analysis:**
+- [Yue et al. 2017](https://www.nature.com/articles/ng.3847): Domesticated vs wild yeast genomes, Ty elements
+- [Dunn et al. 2012](https://genome.cshlp.org/content/22/5/908): Pan-genome copy number variants
+
 ## License
 
 MIT
