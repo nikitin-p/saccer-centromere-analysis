@@ -150,7 +150,12 @@ Two supplementary files in `data/` provide strain metadata:
 **Other Saccharomyces Species:**
 - [Scannell et al. 2011](https://academic.oup.com/g3journal/article/1/1/11/5986445): *S. sensu stricto* (5 species) — SRP006340
 - [Kellis et al. 2003](https://www.nature.com/articles/nature01644): Comparative genomics of 4 species
-- [Hession et al. 2025](https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1011814): Centromere evolution in 9 budding yeast species (Hi-C + ChIP-seq)
+
+**Centromere evolution — key literature:**
+- [Helsen et al. 2026, *Nature*](https://doi.org/10.1038/s41586-025-09779-1): Progressive coevolution of the yeast centromere and kinetochore. Point-centromere atlas for 138 Saccharomycetaceae species and 1,493 *S. cerevisiae* strains; ~9.5% of strains carry CDEII-length variants (13 independent variants, spread through sex, mostly microhomology-mediated duplications); ~10-bp CDEII jumps are tolerated, 5-bp ones are not; Cbf1 coevolves with transitions. Annotation tool **PCAn**: [Zenodo](https://doi.org/10.5281/zenodo.17293587).
+- [Haase et al. 2026, *Nature*](https://doi.org/10.1038/s41586-025-10092-0): Ancient co-option of LTR retrotransposons as yeast centromeres. "Proto-point" centromeres in Saccharomycodales; point centromeres (CDEI, CDEII, CDEIII) derived from Ty5 LTR sequences; CBF3 complex predates the tripartite CDE structure (110–140 Myr); rejects the 2µ-plasmid origin.
+- [Włodzimierz et al. 2026, *bioRxiv* (preprint)](https://doi.org/10.64898/2026.09.17.752431): An atlas of eukaryotic centromere architecture. 325 Darwin Tree of Life genomes; centromeres cycle between satellite (α) and transposon-cluster (Ω) states; centrophilic transposons invade satellite arrays and are recombined back into tandem satellite-like repeats; satellite homogenization is mostly within-chromosome.
+- [Hession et al. 2025, *PLoS Genet*](https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1011814): Centromeres in budding yeasts are conserved in chromosomal location but not in structure. Hi-C + Cse4 ChIP-seq in 9 Saccharomycodales/Phaffomycetales species; structures turn over in situ while synteny around centromeres is kept for ~200 Myr.
 
 **ChIP-seq / Chromatin:**
 - [Henikoff 2012](https://www.pnas.org/doi/10.1073/pnas.1118898109): Tripartite centromeric chromatin organization

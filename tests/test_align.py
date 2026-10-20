@@ -55,3 +55,23 @@ def test_align_all_parallel():
 
     assert "aligned_seq" in result.columns
     assert len(result) == 4
+
+
+@pytest.mark.skipif(
+    shutil.which("mafft") is None,
+    reason="mafft not installed"
+)
+def test_align_centromere_group_with_reference():
+    from centromere.align import align_centromere_group
+
+    df = pd.DataFrame({
+        "sample": ["s1", "s2"],
+        "centromere": ["CEN1", "CEN1"],
+        "sequence": ["ATCACATGATTTTAAAAT", "ATCACATGATTTTTTAAAAT"],
+    })
+
+    result = align_centromere_group(df, "CEN1", reference="ATCACATGATTTAAAAT")
+
+    assert len(result) == 2  # reference is a column, not a row
+    assert result["ref_aligned_seq"].nunique() == 1
+    assert all(len(r) == len(a) for r, a in zip(result["ref_aligned_seq"], result["aligned_seq"]))

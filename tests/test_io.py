@@ -59,3 +59,19 @@ def test_save_tsv():
     df_read = pd.read_csv(f.name, sep="\t")
     assert len(df_read) == 1
     assert df_read.iloc[0]["sample"] == "s1"
+
+
+def test_annotate_samples(tmp_path):
+    import pandas as pd
+    from centromere.io import annotate_samples
+
+    map_path = tmp_path / "map.tsv"
+    map_path.write_text("accession\tassembly\tstrain\nGCA_1\tCCC_1a\tCCC\n")
+    df = pd.DataFrame({"sample": ["GCA_1", "GCA_2"], "centromere": ["CEN1", "CEN1"]})
+
+    result = annotate_samples(df, map_path)
+
+    assert list(result["sample"]) == ["GCA_1", "GCA_2"]
+    assert result.loc[0, "strain"] == "CCC"
+    assert result.loc[0, "assembly"] == "CCC_1a"
+    assert pd.isna(result.loc[1, "strain"])

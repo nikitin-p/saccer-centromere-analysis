@@ -6,4 +6,6 @@ Phenotypes_8391Traits/
 data/41586_2018_30_MOESM3_ESM.xls
 data/41586_2025_9637_MOESM3_ESM.xlsx
 results/
-
+data/assemblies/
+data/scrap_assemblies.tsv
+output/

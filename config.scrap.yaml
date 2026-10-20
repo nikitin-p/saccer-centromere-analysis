@@ -1,0 +1,49 @@
+input:
+  path: "output/scrap/centromeres.tsv"
+  format: auto
+  # ScRAP accession -> strain table
+  sample_map: "data/scrap_assemblies.tsv"
+
+# S288C centromeres: BLAST query, source of the CDE PWMs, and the row every
+# strain is compared against in the alignment
+reference: "data/sacer_centromere.fasta"
+
+cde:
+  genome_dir: "data/assemblies"
+  flank: 150          # bp cut on each side of the BLAST-projected CEN
+  search_radius: 20   # bp around the projected CEN ends searched for CDEI/CDEIII
+
+output:
+  dir: "output/scrap"
+
+preprocess:
+  merge_max_distance: 5000
+
+filter:
+  min_length: 80
+  min_gc: 0.05
+
+align:
+  mafft_args: "--auto"
+  workers: 4
+
+visualize:
+  formats: ["pdf", "png"]
+  dpi: 300
+  centromere_order:
+    - CEN1
+    - CEN2
+    - CEN3
+    - CEN4
+    - CEN5
+    - CEN6
+    - CEN7
+    - CEN8
+    - CEN9
+    - CEN10
+    - CEN11
+    - CEN12
+    - CEN13
+    - CEN14
+    - CEN15
+    - CEN16

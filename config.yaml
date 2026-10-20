@@ -1,6 +1,9 @@
 input:
   path: "centromeres.tsv"
   format: auto
+  # Optional accession -> strain table (e.g. data/scrap_assemblies.tsv for ScRAP);
+  # adds `assembly` and `strain` columns. Leave null when samples are strain codes.
+  sample_map: null
 
 output:
   dir: "output"

@@ -29,31 +29,41 @@ def run_mafft(sequences: list[str], args: str = "--auto") -> list[str]:
 
 
 def align_centromere_group(
-    df: pd.DataFrame, centromere: str, args: str = "--auto"
+    df: pd.DataFrame, centromere: str, args: str = "--auto", reference: str | None = None
 ) -> pd.DataFrame:
     group = df[df["centromere"] == centromere].copy()
     sequences = group["sequence"].tolist()
 
-    if len(sequences) < 2:
-        group["aligned_seq"] = sequences
-        return group
+    # The reference is aligned with the strains but stored as a column, not a
+    # row, so per-strain statistics downstream never count it as a sample
+    if reference is not None:
+        sequences = [reference] + sequences
 
-    aligned = run_mafft(sequences, args)
+    if len(sequences) < 2:
+        aligned = sequences
+    else:
+        aligned = run_mafft(sequences, args)
+
+    if reference is not None:
+        group["ref_aligned_seq"] = aligned[0]
+        aligned = aligned[1:]
     group["aligned_seq"] = aligned
     return group
 
 
 def _align_group_wrapper(args):
-    df, centromere, mafft_args = args
-    return align_centromere_group(df, centromere, mafft_args)
+    df, centromere, mafft_args, reference = args
+    return align_centromere_group(df, centromere, mafft_args, reference)
 
 
 def align_all_parallel(
-    df: pd.DataFrame, args: str = "--auto", workers: int = 4
+    df: pd.DataFrame, args: str = "--auto", workers: int = 4,
+    references: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     centromeres = df["centromere"].unique()
+    references = references or {}
 
-    tasks = [(df, cen, args) for cen in centromeres]
+    tasks = [(df, cen, args, references.get(cen)) for cen in centromeres]
 
     with Pool(workers) as pool:
         results = pool.map(_align_group_wrapper, tasks)

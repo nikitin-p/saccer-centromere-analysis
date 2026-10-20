@@ -94,6 +94,16 @@ def _load_bed(path: Path) -> pd.DataFrame:
     return result
 
 
+def annotate_samples(df: pd.DataFrame, path: str | Path) -> pd.DataFrame:
+    """Add `assembly` and `strain` columns from an accession -> strain table.
+
+    `sample` stays the accession (unique per assembly); `strain` is the
+    3-letter code that joins to the 2018/2025 metadata and phenotype files.
+    """
+    sample_map = pd.read_csv(path, sep="\t").rename(columns={"accession": "sample"})
+    return df.merge(sample_map[["sample", "assembly", "strain"]], on="sample", how="left")
+
+
 def save_tsv(df: pd.DataFrame, path: str | Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

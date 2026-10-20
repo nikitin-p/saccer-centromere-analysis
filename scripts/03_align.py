@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from centromere.align import align_all_parallel
+from centromere.cde import read_reference
 from centromere.io import load_config, save_tsv
 
 
@@ -25,7 +26,10 @@ def main():
     workers = config["align"]["workers"]
     print(f"Aligning sequences with MAFFT ({workers} workers)...")
 
-    df = align_all_parallel(df, args=mafft_args, workers=workers)
+    references = read_reference(config["reference"]) if config.get("reference") else None
+    if references:
+        print(f"  Including reference {config['reference']} in each alignment")
+    df = align_all_parallel(df, args=mafft_args, workers=workers, references=references)
     print(f"  Alignment complete")
 
     output_path = output_dir / "aligned.tsv"
