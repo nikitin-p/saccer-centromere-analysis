@@ -17,11 +17,12 @@ def test_load_config_returns_dict():
     assert config["input"]["path"] == "test.tsv"
 
 
-def test_load_config_missing_file_raises():
+def test_load_config_missing_file_raises(tmp_path):
     from centromere.io import load_config
 
+    # not /nonexistent/...: on some Linux hosts that directory exists and is unreadable
     with pytest.raises(FileNotFoundError):
-        load_config("/nonexistent/config.yaml")
+        load_config(tmp_path / "missing" / "config.yaml")
 
 
 def test_load_data_tsv():
