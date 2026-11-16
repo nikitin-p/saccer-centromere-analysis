@@ -35,6 +35,12 @@ bash scripts/run_all.sh config.scrap142.yaml
 # -> output/scrap142/report/report.html
 ```
 
+**Slurm, in parallel.** `bash scripts/cluster/submit.sh run` submits each step as its own job with
+`afterok` dependencies, so independent steps and both genome sets run at the same time; BLAST and
+minimap2 are split into job arrays over genomes. Also `submit.sh check | env | download | status`;
+`DRY=1` only prints the `sbatch` commands; partition, conda env and shard count are in
+`scripts/cluster/config.sh`.
+
 **Downloads.** Archives are streamed from Zenodo and never stored; only the selected assemblies are
 written, gzipped, to `data/assemblies_<set>/<sample>.fasta.gz`, plus the sample table
 `data/samples_<set>.tsv` (`accession assembly strain`). One assembly per strain: ScRAP `collapsed`

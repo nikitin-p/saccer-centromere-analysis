@@ -121,15 +121,19 @@ for step in "${plan[@]}"; do
         echo "== $step: done earlier, skipped"
         continue
     fi
+    # A shard (Slurm array task, SHARD/NSHARDS) logs separately and leaves no .done marker:
+    # the step is done when the final NSHARDS=1 pass has combined the shards
+    log="$OUT/logs/$step.log"
+    [ "${NSHARDS:-1}" -gt 1 ] && log="$OUT/logs/$step.shard${SHARD:-0}.log"
     echo "== $step  ($(date '+%F %T'))"
     t0=$(date +%s)
-    if ! run_step "$step" > "$OUT/logs/$step.log" 2>&1; then
-        echo "!! $step failed; last lines of $OUT/logs/$step.log:" >&2
-        tail -n 20 "$OUT/logs/$step.log" >&2
+    if ! run_step "$step" > "$log" 2>&1; then
+        echo "!! $step failed; last lines of $log:" >&2
+        tail -n 20 "$log" >&2
         echo "fix and rerun: bash scripts/run_all.sh $CONFIG --from $step" >&2
         exit 1
     fi
     echo "   ok in $(( $(date +%s) - t0 )) s"
-    date '+%F %T' > "$OUT/.done/$step"
+    [ "${NSHARDS:-1}" -gt 1 ] || date '+%F %T' > "$OUT/.done/$step"
 done
 echo "all done: $OUT"

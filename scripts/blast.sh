@@ -20,6 +20,10 @@ GENOME_DIR="${GENOME_DIR:-genome_assemblies}"
 DB_DIR="${DB_DIR:-blast_db_genome_assemblies}"
 RESULTS_DIR="${RESULTS_DIR:-blast_results}"
 THREADS="${THREADS:-1}"
+# SHARD/NSHARDS: process only every NSHARDS-th assembly starting at SHARD (Slurm array task,
+# scripts/cluster/submit.sh); the combined table is written only when NSHARDS=1
+SHARD="${SHARD:-0}"
+NSHARDS="${NSHARDS:-1}"
 
 case "$MODE" in
     cen)
@@ -51,7 +55,10 @@ if [ ${#FILES[@]} -eq 0 ]; then
     exit 1
 fi
 
+i=-1
 for FILE in "${FILES[@]}"; do
+    i=$((i + 1))
+    [ $((i % NSHARDS)) -eq "$SHARD" ] || continue
     BASENAME=$(basename "$FILE")
     BASENAME=${BASENAME%.gz}
     BASENAME=${BASENAME%.*}       # .fa / .fasta / .fna
@@ -86,6 +93,11 @@ for FILE in "${FILES[@]}"; do
 
     echo "Finished processing $FILE ($(wc -l < "$RESULT_PATH") hits)"
 done
+
+if [ "$NSHARDS" -gt 1 ]; then
+    echo "Shard $SHARD of $NSHARDS done; rerun with NSHARDS=1 to combine"
+    exit 0
+fi
 
 echo "Combining results..."
 cat "$RESULTS_DIR"/*"$SUFFIX" > "$COMBINED_OUTPUT"
