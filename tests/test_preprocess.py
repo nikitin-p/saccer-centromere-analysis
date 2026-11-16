@@ -124,3 +124,15 @@ def test_merge_split_hits_distant_piece_does_not_stretch_coordinates():
 
     assert result["send"] == 28574
     assert result["qend"] == 118
+
+
+def test_primary_loci_one_per_centromere():
+    from centromere.preprocess import primary_loci
+    df = pd.DataFrame({"sample": ["A", "A", "A", "B"], "centromere": ["CEN6", "CEN6", "CEN1", "CEN6"],
+                       "sseqid": ["chrVI", "chrXII", "chrI", "chrVI"], "evalue": [1e-54, 7e-6, 1e-50, 1e-54],
+                       "sequence": ["A" * 118, "A" * 112, "A" * 110, "A" * 118]})
+    prim, sec = primary_loci(df)
+    assert list(prim["sseqid"]) == ["chrVI", "chrI", "chrVI"]
+    assert list(sec["sseqid"]) == ["chrXII"]
+    tie = df.iloc[[0, 1]].assign(evalue=1e-10)
+    assert primary_loci(tie)[0]["sseqid"].tolist() == ["chrVI"]   # equal e-value -> longer

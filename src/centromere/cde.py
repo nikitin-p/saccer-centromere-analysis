@@ -99,6 +99,32 @@ def _contig_name(record) -> str:
     return m.group(1) if m else record.id
 
 
+def place_cde(contig: str, cen_lo: int, cen_hi: int, plus: bool, model: CDEModel,
+              flank: int = 150, radius: int = 20) -> dict:
+    """CDEI/CDEIII placed around a projected CEN (1-based, inclusive, contig coordinates).
+
+    Returns `CDEModel.annotate`'s fields plus `sequence` (CDEI start..CDEIII end, CEN
+    orientation) and its contig span `cen_start`..`cen_end` (1-based, inclusive).
+    """
+    from Bio.Seq import Seq
+    w_lo = max(1, cen_lo - flank)
+    w_hi = min(len(contig), cen_hi + flank)
+    window = contig[w_lo - 1:w_hi]
+    if plus:
+        start_guess, end_guess = cen_lo - w_lo, cen_hi - w_lo + 1
+    else:
+        window = str(Seq(window).reverse_complement())
+        start_guess, end_guess = w_hi - cen_hi, w_hi - cen_lo + 1
+    window = window.upper()
+    cde = model.annotate(window, start_guess, end_guess, radius)
+    if plus:
+        cde["cen_start"], cde["cen_end"] = w_lo + cde["cdei_start"], w_lo + cde["cdeiii_end"] - 1
+    else:
+        cde["cen_start"], cde["cen_end"] = w_hi - cde["cdeiii_end"] + 1, w_hi - cde["cdei_start"]
+    cde["sequence"] = window[cde["cdei_start"]:cde["cdeiii_end"]]
+    return cde
+
+
 def annotate_cde(
     df: pd.DataFrame,
     genome_dir: str | Path,
@@ -126,31 +152,21 @@ def annotate_cde(
             else:
                 cen_lo, cen_hi = lo - (qlen - row["qend"]), hi + (row["qstart"] - 1)
 
-            w_lo = max(1, cen_lo - flank)
-            w_hi = min(len(record.seq), cen_hi + flank)
-            window = record.seq[w_lo - 1:w_hi]
-            if plus:
-                start_guess, end_guess = cen_lo - w_lo, cen_hi - w_lo + 1
-            else:
-                window = window.reverse_complement()
-                start_guess, end_guess = w_hi - cen_hi, w_hi - cen_lo + 1
-            window = str(window).upper()
-
-            cde = model.annotate(window, start_guess, end_guess, radius)
-            if plus:
-                g_start, g_end = w_lo + cde["cdei_start"], w_lo + cde["cdeiii_end"] - 1
-            else:
-                g_start, g_end = w_hi - cde["cdeiii_end"] + 1, w_hi - cde["cdei_start"]
-
             row["blast_sequence"] = row["sequence"]
-            row["sequence"] = window[cde["cdei_start"]:cde["cdeiii_end"]]
-            row["sequence_length"] = len(row["sequence"])
-            row["strand"] = "+" if plus else "-"
-            row["contig_name"] = _contig_name(record)
-            row["cen_start"], row["cen_end"] = g_start, g_end
-            row["cdeii_length"] = len(cde["cdeii_seq"])
-            for key in ("cdei_seq", "cdeii_seq", "cdeiii_seq", "cdei_score", "cdeiii_score", "cde_ok"):
-                row[key] = cde[key]
+            row.update(locus_fields(record, cen_lo, cen_hi, plus, model, flank, radius))
             rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def locus_fields(record, cen_lo: int, cen_hi: int, plus: bool, model: CDEModel,
+                 flank: int = 150, radius: int = 20) -> dict:
+    """Main-table CDE columns for a projected CEN (1-based, inclusive) on a SeqRecord."""
+    cde = place_cde(str(record.seq), cen_lo, cen_hi, plus, model, flank, radius)
+    row = {"sequence": cde["sequence"], "sequence_length": len(cde["sequence"]),
+           "strand": "+" if plus else "-", "contig_name": _contig_name(record),
+           "cen_start": cde["cen_start"], "cen_end": cde["cen_end"],
+           "cdeii_length": len(cde["cdeii_seq"])}
+    for key in ("cdei_seq", "cdeii_seq", "cdeiii_seq", "cdei_score", "cdeiii_score", "cde_ok"):
+        row[key] = cde[key]
+    return row

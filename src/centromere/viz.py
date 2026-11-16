@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import logomaker
@@ -6,6 +7,34 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.express as px
 import seaborn as sns
+
+_KALEIDO_RETRIES = 5
+
+
+def _write_image(fig, path: str | Path) -> None:
+    """`fig.write_image` through one persistent kaleido browser, restarted on failure.
+
+    kaleido 1.5.1 opens a fresh Chrome tab per call and sometimes evaluates its render script
+    in the stale about:blank context ("kaleido_scopes is not defined"); most one-shot calls
+    fail on Chrome 150. A persistent server navigates once, so only its start can hit the race.
+    If every attempt fails (no Chrome), the figure is written as HTML next to `path`.
+    """
+    import kaleido
+
+    for attempt in range(_KALEIDO_RETRIES):
+        try:
+            kaleido.start_sync_server(silence_warnings=True)
+            fig.write_image(str(path))
+            return
+        except Exception as err:
+            kaleido.stop_sync_server(silence_warnings=True)
+            if attempt == _KALEIDO_RETRIES - 1:
+                # No usable Chrome (typical on a cluster node): keep the figure as HTML instead
+                html = Path(path).with_suffix(".html")
+                fig.write_html(str(html), include_plotlyjs="cdn")
+                print(f"WARNING: plotly image export failed ({type(err).__name__}: {err}); "
+                      f"wrote {html} instead. `plotly_get_chrome` installs a Chrome for kaleido.",
+                      file=sys.stderr)
 
 
 def plot_length_violin(
@@ -31,7 +60,7 @@ def plot_length_violin(
         points="all",
     )
     fig.update_traces(orientation="v", side="positive", width=0.5)
-    fig.write_image(str(output_path))
+    _write_image(fig, output_path)
     plt.close("all")
 
 
@@ -58,7 +87,7 @@ def plot_gc_violin(
         points="all",
     )
     fig.update_traces(orientation="v", side="positive", width=0.5)
-    fig.write_image(str(output_path))
+    _write_image(fig, output_path)
     plt.close("all")
 
 

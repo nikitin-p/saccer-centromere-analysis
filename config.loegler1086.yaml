@@ -1,0 +1,158 @@
+# Loegler et al. 2025, 1086 isolates (Zenodo 15698884)
+# Data: python scripts/download_data.py --set reference && python scripts/download_data.py --set loegler1086
+# Run:  bash scripts/run_all.sh config.loegler1086.yaml   (tools from the conda env on PATH)
+
+input:
+  path: "output/loegler1086/centromeres.tsv"
+  format: auto
+  # accession (file stem in genome_dir) -> assembly, strain; written by download_data.py
+  sample_map: "data/samples_loegler1086.tsv"
+
+# S288C centromeres: BLAST query, source of the CDE PWMs, and the row every
+# strain is compared against in the alignment
+reference: "data/sacer_centromere.fasta"
+
+cde:
+  genome_dir: "data/assemblies_loegler1086"
+  flank: 150          # bp cut on each side of the BLAST-projected CEN
+  search_radius: 20   # bp around the projected CEN ends searched for CDEI/CDEIII
+
+output:
+  dir: "output/loegler1086"
+
+preprocess:
+  merge_max_distance: 5000
+
+filter:
+  min_length: 80
+  min_gc: 0.05
+
+align:
+  mafft_args: "--auto"
+  workers: 4
+
+visualize:
+  formats: ["pdf", "png"]
+  dpi: 300
+  centromere_order:
+    - CEN1
+    - CEN2
+    - CEN3
+    - CEN4
+    - CEN5
+    - CEN6
+    - CEN7
+    - CEN8
+    - CEN9
+    - CEN10
+    - CEN11
+    - CEN12
+    - CEN13
+    - CEN14
+    - CEN15
+    - CEN16
+
+# Analysis A: scripts/validate_external.py
+validation:
+  helsen_sd4: "data/external/helsen2026/SD4_scer_centromeres.xlsx"   # Helsen 2026 Supplementary Data 4
+  pcan_dir: "output/loegler1086/pcan"                                       # from scripts/run_pcan.sh
+
+# Analysis C: scripts/07_kinetochore.py
+kinetochore:
+  proteins: "data/kinetochore_s288c.faa"                         # S288C, UniProt Swiss-Prot
+  blast_bin: null          # dir with makeblastdb/blastn/tblastn; null = PATH
+  s288c_genome: "data/external/s288c/sacCer3.fa"   # R64 (UCSC sacCer3), download_data.py --set reference
+  evalue: 1.0e-10
+  domains: "data/kinetochore_domains.tsv"                        # C.3 domain coordinates (S288C numbering)
+
+# Analysis D: scripts/10_transposons.py (library from scripts/make_ty_reference.py)
+transposons:
+  library: "data/ty_reference.fasta"       # INT|family|name + LTR|family|name (S288C, SGD)
+  trna: "data/s288c_trna.fasta"            # 275 nuclear S288C tRNAs
+  sgd_te: "data/s288c_te_sgd.tsv"          # SGD Ty/LTR coordinates (check 1)
+  s288c_cen: "data/s288c_cen.bed"
+  loegler: "data/41586_2025_9637_MOESM3_ESM.xlsx"
+  min_pident: 80
+  min_qcov: 0.7
+  windows: [1000, 5000, 20000]
+  flank_bp: 300
+  null_candidates: 200000   # random positions per genome before tRNA matching
+  null_per_genome: 1000
+  null_tolerance: 0.1
+  null_replicates: 10000
+  seed: 1
+
+# Analysis E: scripts/11_ltr_cde.py (needs analysis D outputs: te_elements.tsv, trna_loci.tsv)
+ltr_cde:
+  cdeii_min_len: 70        # S288C CDEII 77-86 bp
+  cdeii_max_len: 95
+  cdeii_min_at: 0.80       # S288C CDEII AT 0.86-0.98
+  n_shuffles: 100          # dinucleotide shuffles per unique LTR sequence
+  n_resamples: 1000        # genomic / intergenic window sets per genome
+  cen_exclusion: 1000      # bp around each CEN excluded from the genomic control
+  sgd_gff: "data/external/sgd/saccharomyces_cerevisiae.gff.gz"
+  seed: 1
+
+# L3 liftover (locator spec phase 2) for analyses F and H:
+# scripts/run_minimap2.sh, scripts/12_flanks_diversity.py, scripts/13_trees.py
+# (spec docs/specs/2026-11-13-flanks-diversity-trees.md)
+locate:
+  minimap2: null           # full path to minimap2; null = PATH
+  preset: asm5             # asm10 / asm20 for more divergent genomes
+  threads: 4
+  min_mapq: 20
+  bridge_bp: 1000          # an unaligned CEN between collinear blocks (gap <= this) is bridged
+  paf_dir: "output/loegler1086/minimap2"
+  # L2 (locator spec phase 1): scripts/make_cen_flanks.py -> blast.sh MODE=flanks -> scripts/l2_flanks.py
+  flanks: "data/s288c_cen_flanks.fasta"        # 2 kb each side, CEN orientation
+  flank_hits: "output/loegler1086/cen_flanks.tsv"
+  min_flank_pident: 90
+  min_flank_cov: 0.5       # fraction of the flank in the HSP
+  max_locus_bp: 20000      # left/right flank inner ends at most this far apart
+  # L4 (locator spec phase 3): scripts/hmm_iterate.py, HMMER 3.4 (Homebrew)
+  hmmer_bin: null          # dir with hmmbuild/nhmmer; null = PATH
+  hmm_dir: "output/loegler1086/hmm"
+  hmm_evalue: 1.0e-10      # a hit counts as a locus
+  hmm_report_evalue: 1.0   # weaker hits kept only as runner-up evidence
+  hmm_margin: 10           # bits the CEN's own profile must beat every other profile by
+  hmm_len_tol: 40          # bp around the S288C length; longer + L2/L3-anchored = insertion
+  max_rounds: 5
+  # Phase 4: 01_preprocess merges L1 with the L2/L3/L4 tables on disk -> loci_reconciled.tsv
+  # (run order: pipeline -> l2_flanks -> 12_flanks_diversity -> hmm_iterate -> pipeline again)
+  reconcile: true
+  rescue: true             # rescued / insertion loci enter the main table, tagged `locator`
+  insertion_bp: 30         # exact L2/L3 locus longer than S288C by more = insertion
+  cen_like_evalue: 1.0e-5  # CEN-like scan: candidates, not calls (locus calls use hmm_evalue)
+  synthetic_dir: "output/loegler1086/locator_synthetic"
+
+# Analysis F: nucleotide diversity at the CEN vs its flanks
+diversity:
+  flank_bp: 2000
+  window: 100
+  min_pair_frac: 0.5       # region NA if fewer pairs have a comparable site
+
+# Analysis H: CEN tree vs genome tree
+trees:
+  cen_exclusion: 2000      # bp around each S288C CEN left out of the genome SNP matrix
+  swap_strain: ADS         # swap check: the most concordant strain gets the block of the
+  swap_donor: BAH          # most genome-distant donor at swap_n CENs (a-priori easiest case)
+  swap_n: 4
+  swap_scan_max_pairs: 200 # power scan: all ordered pairs up to this many, else a seeded sample
+  rscript: "Rscript"
+
+# Analysis F2: CDEII A-tract grammar + DNA shape (scripts/14_cdeii_grammar.py, needs DNAshapeR)
+# (spec docs/specs/2026-11-15-cdeii-grammar-shape.md)
+grammar:
+  min_tract: 4             # A-tract = A/T run >= 4 bp without TpA
+  period: 10.5             # helical period for the phasing score
+  phase_tol: 1             # +-bp around k * period
+  phase_max_d: 42          # tract-centre pairs up to 4 turns apart
+  n_null: 200              # shuffles / genomic windows / mutants per sequence
+  at_tol: 0.02             # genomic windows: AT within +-2 % of the CDEII ...
+  at_tol_wide: 0.04        # ... widened to +-4 % if fewer than min_windows match
+  min_windows: 50
+  cen_exclusion: 2000      # bp around each S288C CEN excluded from genomic windows
+  max_subs: 10             # F2.3: substitution-only alleles with 1..max_subs differences
+  min_event_null: 5       # F2.3b: events with fewer null positions are NA
+  rscript: Rscript
+  seed: 1

@@ -1,0 +1,1955 @@
+---
+title: "Centromere sequence variation in *S. cerevisiae* T2T assemblies"
+subtitle: "ScRAP genomes, from assembly to annotated CDEI–CDEII–CDEIII"
+date: today
+params:
+  data_dir: "../output/scrap"
+  repo: ".."
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    theme: cosmo
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    css: report.css
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+source("report_helpers.R")
+
+d <- load_inputs(params$data_dir, params$repo)
+aligned <- d$aligned
+strains <- d$strains
+reference <- d$reference
+
+columns <- cen_columns(aligned)
+boxes <- cde_boxes(columns)
+variants <- call_variants(aligned, columns)
+events <- variant_events(variants)
+rates <- element_rates(events, aligned)
+spectrum <- substitution_spectrum(variants, aligned, columns)
+
+n_asm <- nrow(strains)
+n_loci <- nrow(aligned)
+n_cen <- n_distinct(aligned$centromere)
+qc_tot <- colSums(d$qc[, -1])
+n_cross <- qc_tot[["raw_hits"]] - qc_tot[["after_locus_assignment"]]
+n_secondary <- if ("secondary_loci" %in% names(qc_tot)) qc_tot[["secondary_loci"]] else 0
+n_merged <- qc_tot[["after_locus_assignment"]] - qc_tot[["final_loci"]] - n_secondary
+n_cde_ok <- sum(aligned$cde_ok)
+pct <- function(x) percent(x, accuracy = 1)
+fmt <- function(x, d = 1) format(round(x, d), nsmall = d)
+
+big <- aligned |> slice_max(delta_length, n = 1, with_ties = FALSE)
+big_ins <- events |> filter(type == "Insertion") |> slice_max(size, n = 1, with_ties = FALSE)
+rate_mean <- rates |> group_by(element, kind) |>
+  summarise(per_kb = 1000 * sum(n) / sum(n_assemblies * element_length), .groups = "drop")
+rate_of <- function(el, k) rate_mean$per_kb[rate_mean$element == el & rate_mean$kind == k]
+n_indel_cdeii <- sum(events$type != "Substitution" & events$element == "CDEII")
+n_indel <- sum(events$type != "Substitution")
+
+# Shown on hover and in the figure files; a light/dark switch is not offered
+assembly_rows <- length(levels(aligned$assembly))
+```
+
+## From genomes to centromeres at a glance {#sec-workflow}
+
+```{r fig-workflow}
+#| column: page
+#| fig-cap: "How centromeres are mined from the assemblies and analysed. Counts are from this run; @sec-pipeline describes each step."
+wf <- workflow_diagram(list(
+  n_asm = n_asm, raw_hits = qc_tot[["raw_hits"]], n_cross = n_cross, n_merged = n_merged,
+  n_loci = n_loci, n_cen = n_cen, n_cde_ok = n_cde_ok
+))
+save_fig(wf, "fig01_workflow", 13.4, 4.1)
+knitr::include_graphics("figures/fig01_workflow.png")
+```
+
+---
+
+## Scope and provenance {#sec-scope}
+
+::: {.callout-important}
+## Where these figures come from
+
+Every figure and number below is **computed when this page is rendered**, from the
+pipeline outputs in ``r params$data_dir``: **`r n_asm` telomere-to-telomere
+assemblies** from the ScRAP collection ([O'Donnell et al. 2023](https://www.nature.com/articles/s41588-023-01459-y)),
+**`r n_loci` centromere loci** (`r n_cen` per assembly). Re-render with
+`quarto render report.qmd -P data_dir:<dir>` to rebuild it from a larger run.
+
+With `r n_asm` assemblies this is a **development set**: it is enough to show what
+each statistic looks like and whether the pipeline is right, not to make
+population-level claims. Read every count as "in these `r n_asm` strains".
+:::
+
+### The biological object
+
+*S. cerevisiae* has **point centromeres**: each of the 16 chromosomes carries a
+short, genetically defined element of roughly **117–120 bp** (S288C annotation)
+that is sufficient to build a kinetochore. This is unlike the megabase-scale
+repeat arrays of most eukaryotes, and it is what makes a base-by-base comparison
+across strains tractable at all. The element has three parts:
+
+| Element | Size | Composition | Bound by |
+|---|---|---|---|
+| **CDEI** | 8 bp | palindromic `RTCACRTG` | Cbf1 (non-essential, stabilising) |
+| **CDEII** | ~78–86 bp | **>90 % A+T**, low complexity, length-variable | wraps the Cse4 (CENP-A) nucleosome |
+| **CDEIII** | 26 bp | conserved, `CCGAA` core | CBF3 complex — **essential**; point mutations in the central CCG abolish function |
+
+The expectation going in is asymmetric: **CDEI and CDEIII should be under strong
+purifying selection** (protein-binding sites whose failure is lethal), while
+**CDEII should tolerate** substitution and length change, because what it
+contributes is a bendable AT-rich stretch of about the right length rather than a
+specific sequence.
+
+### What S288C is, and how it is used here
+
+S288C is the standard laboratory strain and the first eukaryote ever sequenced
+(1996); SGD's annotation of its 16 centromeres is the reference. It is used three
+times: as the **BLAST query** that locates each centromere, as the source of the
+**CDEI/CDEIII motif models**, and as the **row every strain is compared against**.
+"Variant" in this report therefore means *difference from S288C*. It does not mean
+*derived mutation*: S288C is one strain, and @sec-variants shows several places
+where it is the one carrying the unusual allele.
+
+---
+
+## From genome to centromere table {#sec-pipeline}
+
+```{r tbl-strains}
+#| tbl-cap: "The assemblies. Strain metadata from Peter et al. 2018 (joined on the three-letter strain code). `_collapsed` = both haplotypes of a heterozygous genome merged into one sequence; `_1a`, `_3a` = one phased haplotype."
+rearranged <- aligned |>
+  filter(grepl("_", contig_name)) |>
+  group_by(sample) |>
+  summarise(rearranged = paste0(centromere, " on ", contig_name, collapse = "; "))
+strains |>
+  left_join(rearranged, by = "sample") |>
+  transmute(Assembly = assembly, Accession = sample, Strain = strain, Clade = clade,
+            Origin = paste(ecology, geography, sep = " · "), Ploidy = ploidy,
+            Zygosity = zygosity,
+            `CEN on a rearranged chromosome` = coalesce(rearranged, "")) |>
+  knitr::kable()
+```
+
+**How the table was obtained.**
+
+1. **Locate.** The 16 S288C centromeres are BLASTed (`blastn`, word size 7,
+   e ≤ 1e-5) against each assembly.
+2. **Assign each locus to one centromere.** CDEI and CDEIII are shared between
+   centromeres, so a CEN15 query also hits the CEN14 locus weakly (and CEN10 ↔
+   CEN11, CEN3 → CEN15). Overlapping hits form one locus, and the locus goes to
+   the query with the best e-value.
+3. **Merge split hits.** Pieces of one centromere that BLAST reported separately are
+   joined.
+4. **Annotate CDEs from the genome itself.** BLAST only says *where*. The locus ±150
+   bp is cut from the assembly and oriented like S288C; CDEI and CDEIII are placed
+   with position weight matrices built from the 16 S288C elements (CDEI = first 8
+   bp, CDEIII = last 26 bp, by SGD's convention); **CDEII is everything between
+   them**. Sequence and length run from the first base of CDEI to the last base of
+   CDEIII, so insertions are kept and every strain is measured the same way.
+5. **Align** each centromere's sequences together with the S288C element (MAFFT
+   `--auto`); S288C is kept as a reference column, not counted as a strain.
+
+```{r tbl-funnel}
+#| tbl-cap: "From BLAST hits to one annotated locus per assembly and centromere."
+cde_by_sample <- aligned |> group_by(sample) |> summarise(cde_ok = sum(cde_ok))
+d$qc |>
+  left_join(select(strains, sample, assembly), by = "sample") |>
+  left_join(cde_by_sample, by = "sample") |>
+  transmute(Assembly = assembly, `BLAST hits` = raw_hits,
+            `Cross-centromere hits removed` = raw_hits - after_locus_assignment,
+            `Split pieces merged` = after_locus_assignment - final_loci,
+            `Final loci` = final_loci, `Confident CDEI + CDEIII` = cde_ok) |>
+  arrange(Assembly) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+`r n_cross` of `r qc_tot[["raw_hits"]]` BLAST hits were another centromere's locus.
+They are short (~90–100 bp) and weak (e ≈ 1e-6), but long enough to pass a
+length filter, which is how an earlier analysis of 748 strains came to treat about
+a third of its "CEN14" and "CEN15" sequences as the other centromere.
+
+All `r n_loci` loci were found on the expected chromosome, including the
+centromeres that sit on rearranged chromosomes. `r n_cde_ok` of `r n_loci` have both
+CDEI and CDEIII scoring within 2 bits of the weakest S288C element; the exception
+is listed in @tbl-cdeflag.
+:::
+
+```{r tbl-cdeflag}
+#| tbl-cap: "Loci whose CDEI or CDEIII scored below the confidence threshold."
+flag <- aligned |> filter(!cde_ok)
+if (nrow(flag) == 0) {
+  knitr::kable(tibble(Note = "None — every CDEI and CDEIII call is confident."))
+} else {
+  flag |> transmute(Assembly = assembly, Centromere = centromere, CDEI = cdei_seq,
+                    `CDEI score` = cdei_score, CDEIII = cdeiii_seq,
+                    `CDEIII score` = cdeiii_score, `Length, bp` = sequence_length) |>
+    knitr::kable()
+}
+```
+
+## Checked against the published atlas {#sec-validation}
+
+```{r validation-load}
+val_h_path <- file.path(params$data_dir, "validation_helsen.tsv")
+val_p_path <- file.path(params$data_dir, "validation_pcan.tsv")
+has_val <- file.exists(val_h_path) && file.exists(val_p_path)
+if (has_val) {
+  val_h <- read_tsv(val_h_path, show_col_types = FALSE)
+  val_p <- read_tsv(val_p_path, show_col_types = FALSE)
+  same  <- filter(val_h, source == "helsen_same_assembly")
+  other <- filter(val_h, source == "helsen_other_assembly") |>
+    left_join(select(strains, sample, assembly, zygosity), by = "sample")
+  found <- filter(val_p, status == "found")
+  n_same_id  <- sum(same$status == "identical")
+  n_other_id <- sum(other$status == "identical")
+  n_other_cmp <- sum(other$status != "absent_in_helsen")
+  n_pcan_only <- sum(val_p$status == "pcan_only")
+  pcan_d3 <- names(which.max(table(found$d3)))
+}
+```
+
+```{r tbl-validation}
+#| eval: !expr has_val
+#| tbl-cap: "Our loci compared with three independent calls. Same assembly: Helsen et al. 2026 Supplementary Data 4 rows for the same GenBank accession, located in our contig. Other assembly: the Peter et al. 2018 short-read assembly of the same strain (sequence alignment; end gaps ignored). PCAn: Helsen's tool run here on our assemblies (Saccharomyces motifs, no synteny step)."
+tibble(
+  Check = c("Helsen SD4, same assembly", "Helsen SD4, Peter 2018 assembly of the strain", "PCAn v1.0 on our assemblies"),
+  Loci = c(nrow(same), nrow(other), sum(val_p$status != "pcan_only")),
+  `Called by them` = c(sum(same$status != "absent_in_helsen"), n_other_cmp, nrow(found)),
+  `Identical to ours` = c(n_same_id, n_other_id, sum(found$d5 == 0 & found$d3 == as.integer(pcan_d3))),
+  `Extra calls (theirs only)` = c("–", "–", as.character(n_pcan_only))
+) |> knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+On the very same assemblies, Helsen's published atlas and our pipeline agree on
+`r if (has_val) n_same_id else "–"` of `r if (has_val) nrow(same) else "–"` loci base for base,
+CDEI start and CDEIII end included. Their sequences, and PCAn's, carry one base past the
+SGD CDEIII end (checked on S288C, all 16); that constant offset is removed before comparing.
+PCAn, run independently, finds the same loci and no others: it adds nothing as a
+locator for these genomes, but confirms the CDE boundaries are not an artefact of
+our S288C-trained PWMs.
+
+The comparison with the Peter 2018 assemblies of the same strains is different in
+kind: another isolate stock, short reads, a collapsed diploid. Differences there
+fall almost entirely on heterozygous strains (@tbl-validation-strain), so they mostly
+show which allele each assembly happened to keep, not errors on either side.
+:::
+
+```{r tbl-validation-strain}
+#| eval: !expr has_val
+#| tbl-cap: "Our ScRAP loci vs the Peter 2018 assembly of the same strain, per strain."
+other |>
+  group_by(Assembly = assembly, Zygosity = zygosity) |>
+  summarise(Compared = sum(status != "absent_in_helsen"),
+            Identical = sum(status == "identical"),
+            SNVs = sum(snv, na.rm = TRUE), `Indel bp` = sum(indel_bp, na.rm = TRUE),
+            `CDEII length differs` = sum(cdeii_diff != 0, na.rm = TRUE), .groups = "drop") |>
+  arrange(Zygosity, Assembly) |>
+  knitr::kable()
+```
+
+```{r tbl-validation-cdeii}
+#| eval: !expr has_val
+#| tbl-cap: "Loci whose CDEII length differs by 3 bp or more between our assembly and the Peter 2018 assembly of the same strain."
+other |>
+  filter(abs(cdeii_diff) >= 3) |>
+  transmute(Assembly = assembly, Zygosity = zygosity, Centromere = centromere,
+            `CDEII ours, bp` = our_cdeii, `CDEII Peter 2018, bp` = our_cdeii + cdeii_diff,
+            SNVs = snv, `Indel bp` = indel_bp) |>
+  arrange(Assembly, Centromere) |>
+  knitr::kable()
+```
+
+---
+
+## Four locators, reconciled {#sec-locators}
+
+```{r locators-load}
+lc <- load_locators(params$data_dir)
+has_lc <- !is.null(lc)
+if (has_lc) {
+  cat_n <- table(lc$rec$category)
+  n_rec <- nrow(lc$rec)
+  n_agree <- sum(lc$rec$category == "agree")
+  n_bridged <- sum(lc$l3$status == "bridged")
+  rearr <- aligned |> filter(grepl("_chr", contig_name)) |>
+    left_join(lc$rec |> select(sample, centromere, category), by = c("sample", "centromere"))
+  g0 <- lc$rounds |> group_by(round) |> summarise(n = sum(n_profile), ok = sum(found_ok), bits = mean(s288c_bits))
+  near <- lc$nearest |>
+    left_join(distinct(aligned, sseqid, contig_name), by = c(contig = "sseqid")) |>
+    mutate(chrom = coalesce(contig_name, contig))
+  n_near_chr9 <- sum(grepl("chrIX", near$chrom))
+  syn <- lc$syn_detail |> select(case, locator, status) |>
+    pivot_wider(names_from = locator, values_from = status) |>
+    left_join(lc$syn, by = "case")
+  syn_of <- function(k, col) syn[[col]][syn$case == k]
+}
+```
+
+Every locus in this report so far comes from one method: BLAST of the 16 S288C
+centromeres (L1). A centromere too diverged for BLAST would simply be missing. Three
+more locators, each failing in a different way, were run on the same assemblies and
+reconciled with L1 per assembly and centromere.
+
+| | Locator | Depends on | Fails when |
+|---|---|---|---|
+| L1 | BLAST of the S288C CEN, CDEs placed by PWM | CEN sequence close to S288C | CEN diverged, large insertion |
+| L2 | BLAST of the 2 kb on each side | flanks conserved and next to the CEN | a rearrangement breakpoint near the CEN |
+| L3 | minimap2 whole-genome alignment to S288C, CEN coordinates lifted over | collinearity around the CEN | flanks deleted or duplicated |
+| L4 | one HMM per centromere, grown from the strains it finds | the population profile | the profile drifts (guarded by a 10-bit margin over every other profile and the CDE check) |
+
+Loci that overlap on one contig form one cluster; the locators in it are the locus's
+support. Categories: `agree` (every locator that ran found it), `rescued` (L1 missed it,
+another found it; it enters the main table with CDEs placed in that window),
+`sequence_only` (L1 or L4 found it, neither L2 nor L3 anchored it), `insertion` (an exact
+L2 or L3 locus more than 30 bp longer than S288C; the main table takes that window),
+`conflict` (loci on different contigs, listed, not resolved), `partial` and `missing`.
+
+```{r tbl-locators}
+#| eval: !expr has_lc
+#| tbl-cap: "Each locator against L1 over all assembly × centromere pairs. Same boundaries: CDEI start and CDEIII end identical. L3 counts only exactly lifted loci there; bridged ones (the CEN inside an unaligned stretch between two collinear alignment blocks) cover the whole stretch."
+locator_vs_l1(lc) |> knitr::kable()
+```
+
+```{r tbl-locator-categories}
+#| eval: !expr has_lc
+#| tbl-cap: "Reconciled categories."
+lc$rec |> count(Category = category, Support = support, name = "Loci") |> knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+All four locators find the same `r if (has_lc) n_agree else "–"` of
+`r if (has_lc) n_rec else "–"` loci, nothing is rescued and nothing conflicts: in these
+ten genomes BLAST missed no centromere. That includes the
+`r if (has_lc) nrow(rearr) else "–"` centromeres sitting on translocated chromosomes
+(`r if (has_lc) paste(unique(paste(rearr$assembly, rearr$contig_name)), collapse = ", ") else "–"`),
+where synteny could have failed and did not. The boundary differences are small and
+explained: L2 extrapolates past an indel at the edge of a flank, and L3 bridges
+`r if (has_lc) n_bridged else "–"` centromeres that minimap2 left unaligned.
+:::
+
+```{r fig-hmm-growth}
+#| eval: !expr has_lc
+#| column: page
+#| fig-width: 11
+#| fig-height: 3.6
+#| fig-cap: "L4 grown from the S288C sequences alone. Grey: one line per centromere; blue: mean. Each round accepts a strain's sequence only when its own profile beats every other profile by ≥ 10 bits there and CDEI and CDEIII pass the PWM check; the loop stops when a round adds nothing."
+p <- plot_hmm_growth(lc$rounds)
+save_fig(p, "fig_l4_growth", 11, 3.6)
+p
+```
+
+::: {.callout-note}
+## Reading it
+From one sequence per centromere the profiles grow to
+`r if (has_lc) g0$n[g0$round == 1] else "–"` sequences after one round and
+`r if (has_lc) max(g0$n) else "–"` after `r if (has_lc) max(g0$round) else "–"`, when no new
+sequence passes and the loop stops; loci found with status ok go from
+`r if (has_lc) g0$ok[1] else "–"` to `r if (has_lc) tail(g0$ok, 1) else "–"` of 160. The S288C
+sequence scores higher against the grown profile than against itself alone
+(`r if (has_lc) fmt(g0$bits[1]) else "–"` → `r if (has_lc) fmt(tail(g0$bits, 1)) else "–"` bits,
+mean): a single-sequence profile cannot tell which positions are conserved, a population
+profile can. Rejections for a too-close runner-up profile, the sign of a profile drifting
+towards another centromere: `r if (has_lc) sum(lc$rounds$rejected_runner_up) else "–"`.
+:::
+
+### Planted centromeres
+
+The real genomes test only agreement. To test rescue, one assembly
+(`r if (has_lc) "ADS" else "–"`) was copied with its CEN5 damaged, and all four locators
+were rerun on the copy.
+
+```{r tbl-locator-synthetic}
+#| eval: !expr has_lc
+#| tbl-cap: "Planted CEN5 in ADS. cdeii_random: CDEII replaced by random 90 %-AT sequence of the same length; cde_mutated: also 2 substitutions in CDEI and 3 in CDEIII; insertion: a full Ty1 (LTR–INT–LTR, 5.9 kb) in the middle of CDEII. L4 uses the final profiles. Planted CDEs: the main-table locus has exactly the planted sequence, CDEI and CDEIII. The other 15 centromeres agree in every case."
+syn |>
+  transmute(Case = case, `Planted bp` = planted_length, L1, L2, L3, L4,
+            Category = category, Support = support, `Main-table bp` = final_length,
+            `CDEII bp` = final_cdeii, `CDE check` = ifelse(cde_ok, "pass", "fail"),
+            `Planted CDEs` = ifelse(sequence_is_planted & cdei_is_planted & cdeiii_is_planted, "yes", "no")) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+With CDEII scrambled, BLAST loses CEN5 and so does the HMM: its profile draws most of its
+score from CDEII, and CDEIII alone reaches only E ≈ 0.2. The flank and synteny locators
+still find the locus, and the CDEs placed in their window are exactly the planted ones, so
+the rescue works and comes from L2 and L3, not L4: the HMM removes the S288C bias of BLAST
+but still depends on the centromere's own sequence. With CDEI and CDEIII mutated as well
+the locus is still rescued, but fails the CDE check and enters the table flagged. The
+5.9-kb Ty1 is the case BLAST gets wrong rather than misses: L1 returns a
+`r if (has_lc) lc$syn_detail$length[lc$syn_detail$case == "insertion" & lc$syn_detail$locator == "L1"] else "–"`-bp
+piece, which the reconciled table replaces with the full
+`r if (has_lc) syn_of("insertion", "final_length") else "–"`-bp locus from the flanks
+(`r if (has_lc) syn_of("insertion", "insertion_bp") else "–"` bp longer than S288C).
+:::
+
+### CEN-like elements
+
+The final profiles were also searched over every contig, and over the S288C genome, for
+a second centromere: a hit with E ≤ 10^-5^, its profile ≥ 10 bits ahead of every other one,
+CDEI and CDEIII passing, outside every known locus.
+
+::: {.callout-note}
+## Reading it
+There is none, in any of the ten assemblies or in S288C
+(`r if (has_lc) nrow(lc$cen_like) else "–"` candidates). The strongest hit outside the
+known loci is the same in every genome, on chromosome IX
+(`r if (has_lc) n_near_chr9 else "–"` of `r if (has_lc) nrow(near) else "–"` genomes, about
+70 kb from CEN9): a stretch matching the CEN15 profile at
+E `r if (has_lc) signif(min(near$evalue), 2) else "–"`–`r if (has_lc) signif(max(near$evalue), 2) else "–"`
+(`r if (has_lc) paste(range(near$bits), collapse = "–") else "–"` bits), in S288C on
+`r if (has_lc) with(near[near$sample == "S288C", ], paste0(contig, ":", min(env_from, env_to))) else "–"`,
+three to four orders of magnitude short of the threshold. No neocentromere, no dicentric
+arm, no stray CEN fragment.
+:::
+
+## CDEII length in helical steps {#sec-cdeii-steps}
+
+```{r microevo-load}
+mev <- load_microevo(params$data_dir)
+has_mev <- !is.null(mev)
+if (has_mev) {
+  st <- mev$steps
+  var_loci <- filter(st, class_median != "within")
+  hs <- filter(mev$h_steps, !divergent)
+  n_h_asm <- sum(mev$h_steps$n_assemblies)
+  h_by_d <- hs |> group_by(d = abs(delta_median)) |> summarise(n = sum(n_assemblies), .groups = "drop")
+  h_n <- function(lo, hi) sum(h_by_d$n[h_by_d$d >= lo & h_by_d$d <= hi])
+  n_col <- sum(mev$hap$verdict == "other_assembly_at_median")
+}
+```
+
+CDEII is wrapped once around the Cse4 nucleosome, between Cbf1 on CDEI and CBF3 on
+CDEIII. Adding or removing about one helical turn (~10 bp) keeps the two complexes on
+the same face of the DNA; half a turn (~5 bp) rotates one relative to the other.
+Helsen et al. 2026 found ~10-bp steps tolerated in natural strains and 5-bp steps not.
+Here each CDEII is compared with the **population median** for its centromere, not with
+S288C: the S288C CEN4 CDEII (77 bp) is itself an 8-bp deletion relative to almost every
+other strain.
+
+```{r fig-cdeii-steps}
+#| eval: !expr has_mev
+#| column: page
+#| fig-width: 11
+#| fig-height: 6.5
+#| fig-cap: "CDEII length of every locus relative to the median for its centromere (10 ScRAP assemblies plus S288C). Shaded: one and two helical turns (8–12, 18–22 bp); dashed lines: multiples of 10.2 bp. Labelled points are outside ±2 bp. Hover for the indels found against the reference allele."
+p_steps <- plot_cdeii_steps(st)
+save_fig(p_steps, "fig_b1_cdeii_steps", 10, 6)
+as_plotly(p_steps, 560)
+```
+
+```{r tbl-cdeii-variants}
+#| eval: !expr has_mev
+#| tbl-cap: "Loci outside ±2 bp of the median, with indels of 3 bp or more against the reference allele (the most frequent CDEII sequence of median length), and what the Peter 2018 assembly of the same strain shows (Helsen SD4). `tandem x1u22 mh10` = one extra copy of a 22-bp unit with 10 bp of junction microhomology."
+var_loci |>
+  left_join(select(mev$hap, strain, centromere, phasing, other_assembly_cdeii, verdict),
+            by = c("strain", "centromere")) |>
+  transmute(Strain = strain, Centromere = as.character(centromere), `CDEII, bp` = cdeii_length,
+            `Median, bp` = median_length, `Δ, bp` = delta_median, Class = class,
+            `Indels ≥ 3 bp` = coalesce(events, "– (only 1–2 bp indels)"),
+            Assembly = coalesce(phasing, "reference"),
+            `Peter 2018 CDEII, bp` = coalesce(other_assembly_cdeii, "–"),
+            Verdict = coalesce(verdict, "–")) |>
+  arrange(Class, Strain) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+`r if (has_mev) sum(st$class_median == "within") else "–"` of
+`r if (has_mev) nrow(st) else "–"` loci lie within ±2 bp of the median. The two
+whole-turn variants are the CFS CEN16 tandem duplication (+22 bp, two turns) and S288C's
+own CEN4 (−8 bp, a non-tandem 7-bp deletion plus 1 bp). The off-step loci are all
+−3 to −5 bp, and `r if (has_mev) n_col else "–"` of them sit on collapsed (heterozygous)
+assemblies or on ADS, where the Peter 2018 assembly of the same strain carries a CDEII of
+median length. In a collapsed assembly that is what a heterozygote looks like: each
+assembly kept a different haplotype. Without ScRAP reads (not local) this stays a
+candidate, not a call. ADS is homozygous, so its CEN6 difference (80 vs 83 bp) is a
+real disagreement between the two assemblies. The two remaining off-step loci, CEN13 in
+ASN (−3) and BCE (−4), are the same 3-bp deletion and are found at the same length in
+Peter 2018 as well: a real, shared short allele.
+:::
+
+### The same scan on the Helsen atlas
+
+Every distinct CDEII in Helsen Supplementary Data 4 was run through the same indel
+caller, weighted by the number of assemblies carrying it. Alleles aligning to the
+reference at < 85 % identity (gap-free columns) are excluded: their alignments place
+compensating insertion–deletion pairs that are not real events.
+
+```{r fig-helsen-steps}
+#| eval: !expr has_mev
+#| column: page
+#| fig-width: 11
+#| fig-height: 4.5
+#| fig-cap: "CDEII length relative to the per-centromere median in Helsen SD4 (all centromeres pooled; log scale). Bands and lines as above."
+p_hs <- plot_helsen_steps(mev$h_steps)
+save_fig(p_hs, "fig_b2_helsen_steps", 10, 4.2)
+as_plotly(p_hs, 400)
+```
+
+```{r tbl-helsen-recurrent}
+#| eval: !expr has_mev
+#| tbl-cap: "Recurrent CDEII variants in Helsen SD4: |Δ| ≥ 5 bp and carried by at least 3 assemblies."
+hs |>
+  filter(abs(delta_median) >= 5, n_assemblies >= 3) |>
+  arrange(desc(n_assemblies)) |>
+  transmute(Allele = allele, Assemblies = n_assemblies, `CDEII, bp` = cdeii_length,
+            `Δ, bp` = delta_median, Class = class, `Indels ≥ 3 bp` = events) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+Over `r if (has_mev) format(n_h_asm, big.mark = ",") else "–"` CEN calls, half-turn
+steps are close to absent: |Δ| = 5–7 bp in `r if (has_mev) h_n(5, 7) else "–"`
+assemblies against `r if (has_mev) h_n(8, 12) else "–"` at 8–12 bp, while 3–4 bp
+changes (mostly in A/T runs) are common (`r if (has_mev) h_n(3, 4) else "–"`). This fits
+Helsen's model. Two recurrent variants fit it less well: CEN2 +13 bp and CEN3 +25 bp,
+exact tandem duplications carried by dozens of assemblies, i.e. about 1.3 and 2.5 turns.
+Whether those strains carry compensating changes elsewhere in the kinetochore is a
+question for analysis C. All three large insertions (CEN2 +13, CEN16 +22, CEN3 +25) are
+exact tandem duplications with 4–12 bp of junction microhomology, whereas the common
+CEN4 −8 bp allele (the S288C one) is a non-tandem deletion.
+:::
+
+---
+
+## Kinetochore genes {#sec-kinetochore}
+
+```{r kinetochore-load}
+kt <- load_kinetochore(params$data_dir)
+has_kt <- !is.null(kt)
+if (has_kt) {
+  ktg <- filter(kt$genes, strain != "S288C")
+  kt_ctrl <- filter(kt$genes, strain == "S288C")
+  n_ctrl_ok <- sum(kt_ctrl$status == "intact" & kt_ctrl$n_substitutions == 0 & kt_ctrl$n_other_variants == 0)
+  n_kt_strains <- n_distinct(ktg$strain)
+  kt_fs <- filter(ktg, status != "intact")
+  kt_shift <- filter(ktg, start_shift_codons > 0)
+  kt_private <- filter(kt$positions, ref_private)
+  cdei_fixed <- kt$cen |> filter(cde_ok) |> group_by(centromere) |>
+    summarise(k = n_distinct(cdei_core), .groups = "drop")
+  n_ccg <- sum(kt$cen$ccg_hit, na.rm = TRUE)
+  # Strain pairs that carry the same haplotype at every gene
+  hm <- select(kt$matrix, strain, all_of(KT_GENES))
+  pairs <- combn(hm$strain, 2, simplify = FALSE)
+  shared <- vapply(pairs, \(p) sum(unlist(hm[hm$strain == p[1], KT_GENES]) ==
+                                   unlist(hm[hm$strain == p[2], KT_GENES])), integer(1))
+  top_pair <- pairs[[which.max(shared)]]
+}
+```
+
+The centromere is read by proteins, so a change in CDEI–CDEIII could be tolerated
+because the proteins that bind it changed too. Ten kinetochore genes were extracted
+from every assembly (`tblastn` with the S288C proteins, exons stitched, translated):
+**Cbf1** on CDEI; the CBF3 complex on CDEIII (**Cep3**, whose Zn₂Cys₆ domain contacts
+the `CCG`, **Ndc10**, **Ctf13**, **Skp1**); the centromeric histone **Cse4** and its
+chaperone **Scm3**; and the inner kinetochore (**Mif2**, **Okp1**, **Ame1**). As a
+control, the same search on the S288C genome (R64) returns
+`r if (has_kt) n_ctrl_ok else "–"` of 10 genes identical to the reference protein.
+
+```{r fig-kinetochore-matrix}
+#| eval: !expr has_kt
+#| column: page
+#| fig-width: 10
+#| fig-height: 4.8
+#| fig-cap: "Kinetochore protein haplotypes per strain. Colour is the number of amino-acid substitutions against S288C; the label is the haplotype (same label within a gene = identical protein; · = identical to S288C; fs = frameshift, red). Strains are ordered by Cbf1 haplotype. Hover for the substitutions."
+p_ktm <- plot_kinetochore_matrix(kt$genes)
+save_fig(p_ktm, "fig_c1_kinetochore_haplotypes", 10, 4.8)
+as_plotly(p_ktm, 440)
+```
+
+```{r tbl-kinetochore-private}
+#| eval: !expr has_kt
+#| tbl-cap: "Positions where every intact strain allele differs from S288C, i.e. S288C carries the rare residue."
+kt_private |>
+  transmute(Gene = gene, Position = ref_pos, `S288C` = ref, Strains = alleles,
+            `Strains with call` = n, Domain = na_if(domain, "-") |> coalesce("–")) |>
+  knitr::kable()
+```
+
+```{r tbl-kinetochore-fs}
+#| eval: !expr has_kt
+#| tbl-cap: "Gene calls that are not a plain substituted protein. `q409(hp4)` = frameshift at codon 409 of the query, in a 4-bp homopolymer. Start shift = first in-frame Met downstream of the S288C start."
+bind_rows(
+  kt_fs |> transmute(Strain = strain, Gene = as.character(gene), Call = "Frameshift",
+                     Detail = frameshifts, `Protein, aa` = protein_length, `S288C, aa` = ref_length),
+  kt_shift |> transmute(Strain = strain, Gene = as.character(gene), Call = "Start shift",
+                        Detail = paste0("starts at Met", start_shift_codons + 1),
+                        `Protein, aa` = protein_length, `S288C, aa` = ref_length)
+) |>
+  left_join(select(strains, strain, assembly), by = c(Strain = "strain")) |>
+  relocate(Assembly = assembly, .after = Strain) |>
+  arrange(Call, Gene, Strain) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+Every strain has its own protein haplotype at most genes; only
+`r if (has_kt) paste(top_pair, collapse = " and ") else "–"` share
+`r if (has_kt) max(shared) else "–"` of 10. Cse4 and Skp1 are almost invariant (one
+substitution each, both in ASN). Three positions are S288C-private: **Cbf1 C262R** lies
+in the bHLH, the DNA-binding domain that reads CDEI, so it is the S288C protein, not the
+strains, that is unusual there; Ndc10 K774Q and Ame1 L97P are outside annotated domains.
+In `r if (has_kt) nrow(kt_shift) else "–"` strains the first Ndc10 start codon is lost
+and the protein begins 11 or 14 codons downstream; the N-terminus of Ndc10 is not part of
+its DNA-binding core, so this is likely tolerated.
+
+All `r if (has_kt) nrow(kt_fs) else "–"` frameshifts sit in collapsed assemblies (ASN,
+ANM) and in 4–5 bp homopolymers. That is the signature of residual consensus errors in a
+merged heterozygous assembly, and the predicted products (e.g. a 67-aa Ame1, an 86-aa
+Cep3) would remove essential proteins. Without the reads these are treated as
+unresolved, and only intact alleles enter the domain analysis below.
+:::
+
+### Where the protein variation sits
+
+```{r fig-kinetochore-domains}
+#| eval: !expr has_kt
+#| column: page
+#| fig-width: 9
+#| fig-height: 9
+#| fig-cap: "Variable positions per 100 aa in each annotated region (UniProt; Cse4 helices and loop 1 mapped from histone H3), among intact alleles. S288C-private positions are not counted. Point size is the region length. Hover for counts."
+p_ktd <- plot_domain_rates(kt$domains)
+save_fig(p_ktd, "fig_c2_kinetochore_domains", 9, 9)
+as_plotly(p_ktd, 820)
+```
+
+```{r tbl-kinetochore-cen}
+#| eval: !expr has_kt
+#| tbl-cap: "Centromere side of the comparison, per strain (16 centromeres each). CDEI / CDEIII: centromeres with any substitution against S288C. CDEII length: centromeres whose CDEII length differs from S288C; off-step: by 3–7 or 13–17 bp."
+kt$matrix |>
+  transmute(Strain = strain, `CDEI` = n_cdei_alt, `CDEII length` = n_cdeii_len_alt,
+            `CDEII off-step` = n_cdeii_off_step, `CDEIII` = n_cdeiii_alt,
+            `CDEIII CCG hit` = n_ccg_hit, `No CDE call` = n_no_cde_call) |>
+  arrange(Strain) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+The DNA-binding parts are conserved. The Cse4 histone-fold, END and loop 1 carry no
+substitution at all (Cse4's single change, V128I, is in the NLS); the Cep3 Zn₂Cys₆ and
+the Mif2 AT hook are invariant; the Cbf1 bHLH differs only by the S288C-private C262R.
+The variation is in the disordered regions: the Cbf1 N-terminal tail
+(`r if (has_kt) kt$domains$n_substituted[kt$domains$gene == "CBF1" & kt$domains$domain == "N-terminal disordered tail"] else "–"`
+variable positions), the Mif2 and Ndc10 disordered segments, Scm3 and Ctf13. The Cbf1
+tail is the region that changed along with the centromeres in other budding yeasts.
+
+On the DNA side, the targets of these proteins hardly move either. The CDEI core is the
+same in all strains at
+`r if (has_kt) sum(cdei_fixed$k == 1) else "–"` of 16 centromeres, and the `CCG` that Cep3
+contacts in CDEIII is changed in `r if (has_kt) n_ccg else "–"` loci. The one CEN-side
+difference shared by every strain, CEN4 CDEII +8 bp relative to S288C (@sec-cdeii-steps),
+is again S288C-private. So no strain combines an unusual centromere with an unusual
+DNA-binding domain, and there is nothing to co-vary here. With one haplotype per strain,
+any pairing of a protein allele with a centromere allele is confounded with strain
+relatedness at n = 10; a real association test needs the full ScRAP set or the
+1,011-genome assemblies.
+:::
+
+---
+
+## Aneuploidy and centromere alleles {#sec-aneuploidy}
+
+```{r aneuploidy-load}
+an <- load_aneuploidy(file.path(params$repo, "output/peter748"))
+has_an <- !is.null(an)
+if (has_an) {
+  an_strains <- unique(an$calls$strain)
+  an_meta <- filter(an$meta, strain %in% an_strains, !is.na(aneuploidies))
+  n_an_set <- length(an_strains)
+  n_an_status <- nrow(an_meta)
+  n_an_aneu <- sum(an_meta$aneuploidies != "euploid")
+  an_tested <- filter(an$assoc, tested, predictor %in% names(ANEU_PREDICTORS))
+  n_an_chrom <- n_distinct(an_tested$chrom)
+  fr0 <- function(a, n) pct(a / n)
+  an_min <- slice_min(an_tested, perm_p, n = 1, with_ties = FALSE)
+  an_nons288c <- an$calls |> filter(n_complete > 0) |> group_by(centromere) |>
+    summarise(f = mean(non_s288c), .groups = "drop")
+}
+```
+
+If a centromere allele binds the kinetochore less well, the chromosome that carries it
+should be missegregated more often, and strains that are aneuploid for that chromosome
+should carry the allele more often than euploid strains. This is tested on a different
+and much larger set than the rest of the report: the Peter et al. 2018 short-read
+assemblies, `r if (has_an) n_an_set else "–"` strains with BLAST loci for the 16
+centromeres, of which `r if (has_an) n_an_status else "–"` have an aneuploidy call in
+Peter 2018 Table S1 (`r if (has_an) n_an_aneu else "–"` aneuploid for at least one
+chromosome). Among the ten ScRAP strains only CFS is aneuploid, so the question cannot be
+asked there.
+
+Those assemblies are not available locally, so the loci are the BLAST hits only, without
+CDE annotation. A locus counts when the hit reaches within 2 bp of both ends of the S288C
+element (BLAST usually trims the first base of CEN1). Two allele classes are used per
+strain and centromere: **not the major allele** (sequence differs from the most common
+complete sequence of that centromere) and **length differs from the mode**. "Differs
+from S288C" is not used: S288C is the minority allele at most centromeres (e.g.
+`r if (has_an) pct(an_nons288c$f[an_nons288c$centromere == "CEN6"]) else "–"` of strains
+differ at CEN6), as in @sec-cdeii-steps. The outcome for chromosome *k* is any gain or
+loss of *k*; a chromosome is tested when at least 10 strains are aneuploid for it
+(`r if (has_an) n_an_chrom else "–"` of 16). Clade is the confounder, since both
+aneuploidy and centromere alleles are clade-structured: odds ratios come from conditional
+logistic regression stratified by clade, and p-values from 10,000 permutations of the
+allele within clades, with Benjamini–Hochberg correction over the tested chromosomes.
+
+```{r fig-aneuploidy}
+#| eval: !expr has_an
+#| column: page
+#| fig-width: 10
+#| fig-height: 4.6
+#| fig-cap: "Odds of aneuploidy for chromosome *k* in strains carrying the variant allele at CEN*k*, within clade (conditional logit; 95 % CI, clipped to 0.01–100). Only chromosomes with ≥ 10 aneuploid strains. ×: not estimable, because no aneuploid strain (or every one) carries the variant. Hover for the counts and permutation p."
+p_an <- plot_aneuploidy_or(an$assoc)
+save_fig(p_an, "fig_g1_aneuploidy_or", 10, 4.6)
+as_plotly(p_an, 420)
+```
+
+```{r tbl-aneuploidy}
+#| eval: !expr has_an
+#| tbl-cap: "Per tested chromosome: aneuploid strains (gain / loss) and how many carry each allele class at the chromosome's own centromere, against the same fraction in euploid strains. p: within-clade permutation; q: BH over tested chromosomes."
+fr <- function(a, n) paste0(a, "/", n, " (", pct(a / n), ")")
+an_tested |>
+  left_join(an$counts, by = "chrom") |>
+  mutate(predictor = ANEU_PREDICTORS[predictor]) |>
+  select(chrom, centromere, set_gain, set_loss, n_aneuploid, predictor, aneu_variant, eu_variant, eu_ref, perm_p, perm_q) |>
+  pivot_wider(names_from = predictor, values_from = c(aneu_variant, eu_variant, eu_ref, perm_p, perm_q)) |>
+  arrange(chrom) |>
+  transmute(Centromere = centromere, `Gain / loss` = paste(set_gain, "/", set_loss),
+            `Major: aneuploid` = fr(`aneu_variant_Not the major allele`, n_aneuploid),
+            `Major: euploid` = fr(`eu_variant_Not the major allele`,
+                                  `eu_variant_Not the major allele` + `eu_ref_Not the major allele`),
+            `Major: p` = signif(`perm_p_Not the major allele`, 2),
+            `Length: aneuploid` = fr(`aneu_variant_Length differs from mode`, n_aneuploid),
+            `Length: euploid` = fr(`eu_variant_Length differs from mode`,
+                                   `eu_variant_Length differs from mode` + `eu_ref_Length differs from mode`),
+            `Length: p` = signif(`perm_p_Length differs from mode`, 2),
+            q = signif(pmin(`perm_q_Not the major allele`, `perm_q_Length differs from mode`), 2)) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+Nothing comes out. No chromosome shows an association at either allele class: the
+smallest permutation p is `r if (has_an) signif(an_min$perm_p, 2) else "–"`
+(`r if (has_an) paste(an_min$centromere, ANEU_PREDICTORS[an_min$predictor]) else "–"`), and
+all q are close to 1. Gains dominate (chromosomes I, IX, VIII, III and XI, as in
+Peter 2018), and the variant fractions in aneuploid strains sit within sampling noise of
+the euploid fractions, in both directions. Several length tests are not estimable because
+no aneuploid strain carries a length variant at all, which also argues against a large
+effect. The one raw difference shows why the clade
+stratification matters: at CEN6, `r if (has_an) with(filter(an_tested, centromere == "CEN6", predictor == "length_variant"), fr0(aneu_variant, n_aneuploid)) else "–"`
+of aneuploid strains carry a length variant against
+`r if (has_an) with(filter(an_tested, centromere == "CEN6", predictor == "length_variant"), fr0(eu_variant, eu_variant + eu_ref)) else "–"`
+of euploid ones (Fisher p ≈ 0.04 without clade), but within clades the odds ratio is
+about 1: the aneuploid strains and the length allele come from the same clades.
+
+This is a weak test, not evidence of absence. With
+`r if (has_an) paste(min(an_tested$n_aneuploid), "to", max(an_tested$n_aneuploid)) else "–"`
+aneuploid strains per chromosome only large odds ratios (roughly 3 or more) could be
+detected. Aneuploidy is also unstable over a few hundred generations, so the call reflects
+the isolate's recent history as much as its centromere. And the allele classes pool many
+different sequences regardless of where the difference lies; without CDE annotation a
+change in CDEII flanks counts the same as one in the CDEIII `CCG`. A sharper version would
+restrict the variant class to CDEII length off a helical step or to CDEI/CDEIII changes,
+which needs the CDE annotation and therefore the assemblies themselves.
+:::
+
+---
+
+## Centromere alleles and phenotypes {#sec-phenotypes}
+
+```{r phenotypes-load}
+ph <- load_phenotypes(file.path(params$repo, "output/peter748/phenotypes"))
+has_ph <- !is.null(ph)
+if (has_ph) {
+  ph_all <- bind_rows(ph$primary, ph$secondary)
+  ph_lambda <- ph_all |> distinct(family, lambda_family) |>
+    mutate(label = PHENO_FAMILIES[family]) 
+  lam <- function(f) signif(ph_lambda$lambda_family[ph_lambda$family == f], 2)
+  n_tests <- function(d) sum(!is.na(d$p))
+  ph_n_strains <- n_distinct(ph$predictors$strain[!is.na(ph$predictors$rare_burden)])
+  ph_n_growth <- median(ph$samples$n[ph$samples$klass == "growth"])
+  ph_n_expr <- median(ph$samples$n[ph$samples$klass == "expression"])
+  ph_min_q <- min(ph$primary$q, na.rm = TRUE)
+  ph_min_q2 <- min(ph$secondary$q, na.rm = TRUE)
+  cup1 <- filter(ph$controls, grepl("CUP1", control))
+  cnv_ctrl <- filter(ph$controls, grepl("own expression", control))
+}
+```
+
+If a centromere allele segregates its chromosome less faithfully, the cost should show
+most under drugs that stress the spindle or the replication fork, and an allele could also
+act locally on the genes around it. This section asks both questions on the phenotypes of
+Loegler et al. 2025 (`Phenotypes_8391Traits`: 241 growth conditions, RNA-seq and protein
+abundance), with centromere alleles taken from the Helsen et al. 2026 atlas for the Peter
+2018 genomes: `r if (has_ph) ph_n_strains else "–"` strains with all 16 centromeres
+called, of which a median of `r if (has_ph) ph_n_growth else "–"` have a given growth trait
+and `r if (has_ph) ph_n_expr else "–"` a given expression trait.
+
+Four predictors, all relative to the population and not to S288C (@sec-cdeii-steps):
+**not the major allele** at a centromere (0, ½ or 1 by the share of the strain's
+haplotypes), **CDEII length difference** from that centromere's median, **off a helical
+step** (|Δ| ≥ 3 bp and not within 2 bp of 10 or 20), and a genome-wide **rare-allele
+burden** (centromeres carrying an allele below 5 % frequency). A per-centromere predictor is
+tested only when at least 20 strains are in the minority class.
+
+Relatedness is the main confounder, as in @sec-aneuploidy, so every test is a linear mixed
+model (EMMAX: variance components fitted once per trait under the null, then a GLS Wald test
+per predictor) with a kinship matrix from the 82,869 SNPs of the Peter 2018 GWAS matrix.
+For a centromere on chromosome *k* the kinship leaves chromosome *k* out, so markers linked
+to the centromere cannot absorb its effect. Ploidy and the copy change of chromosome *k*
+(Peter 2018) are covariates. Traits are rank-inverse-normal transformed. Tests are split into
+a **primary** family, fixed in advance (growth on benomyl, 4-NQO, hydroxyurea and
+camptothecin; expression and protein of genes within 10 kb of the centromere against that
+centromere; expression and protein of 11 kinetochore genes against every centromere and the
+burden), and a **secondary** scan of all growth traits, each with its own BH correction.
+
+```{r fig-phenotypes-qq}
+#| eval: !expr has_ph
+#| column: page
+#| fig-width: 11
+#| fig-height: 3.6
+#| fig-cap: "Observed against expected −log10 p per family of tests. Points on the diagonal: no association beyond chance. Hover for the trait, centromere, effect and, for the smallest p, the p after conditioning on the local haplotype."
+p_ph <- plot_pheno_qq(ph$primary, ph$secondary)
+save_fig(p_ph, "fig_p1_pheno_qq", 11, 3.6)
+as_plotly(p_ph, 360)
+```
+
+```{r tbl-phenotypes-top}
+#| eval: !expr has_ph
+#| tbl-cap: "Smallest p in the primary family. β: change in the inverse-normal trait per unit of the predictor (per bp for CDEII Δ). p | local: the same test with 5 principal components of the SNPs within ±50 kb of the centromere added as covariates. q: BH over the primary family."
+ph$primary |>
+  slice_min(p, n = 12, with_ties = FALSE) |>
+  transmute(Family = PHENO_FAMILIES[family], Trait = trait, Centromere = centromere,
+            Predictor = PHENO_PREDICTORS[predictor], n, Minority = n_minor,
+            β = signif(beta, 2), p = signif(p, 2), `p | local` = signif(p_local, 2), q = signif(q, 2)) |>
+  knitr::kable()
+```
+
+```{r tbl-phenotypes-controls}
+#| eval: !expr has_ph
+#| tbl-cap: "Positive controls run through the same model with the full kinship: CUP1 copy number (Peter 2018 CNV marker YHR055C) against growth on copper, and the five most variable ORF copy-number markers against the expression of the same ORF."
+ph$controls |>
+  transmute(Control = control, Trait = trait, Marker = marker, n, β = signif(beta, 2), p = signif(p, 2)) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+No association survives correction. The smallest q is
+`r if (has_ph) signif(ph_min_q, 2) else "–"` in the primary family
+(`r if (has_ph) n_tests(ph$primary) else "–"` tests) and
+`r if (has_ph) signif(ph_min_q2, 2) else "–"` in the secondary scan
+(`r if (has_ph) n_tests(ph$secondary) else "–"` tests). The model itself is not the reason:
+CUP1 copy number comes out at p down to
+`r if (has_ph) format(min(cup1$p), digits = 2) else "–"` for copper growth, and gene copy number
+predicts the gene's own expression in
+`r if (has_ph) sum(cnv_ctrl$p < 1e-10) else "–"` of `r if (has_ph) nrow(cnv_ctrl) else "–"`
+control genes, with the expected positive sign. The growth family is well calibrated
+(λ = `r if (has_ph) lam("primary_growth") else "–"`; secondary λ =
+`r if (has_ph) lam("secondary") else "–"`).
+
+The cis family is inflated (λ = `r if (has_ph) lam("primary_cis") else "–"`), almost
+entirely in "not the major allele". That is expected rather than a failure of the
+correction: the kinship deliberately leaves the centromere's chromosome out, so any
+expression QTL near the centromere that travels on the same haplotype shows up as a
+centromere effect. A centromere and a cis-eQTL 5 kb away cannot be separated with short-range
+linkage this strong, and none of these tests reaches q < 0.05 anyway.
+
+The most consistent growth signal is CDEII length at CEN11, with the same sign across
+benomyl, anisomycin and DMSO at 40–48 h (YPD-based conditions). It is carried by small
+groups (about 40 strains each at −1 and +1 bp, concentrated in the French Guiana and
+Mosaic 3 clades), it does not weaken when the local haplotype is conditioned on, and it is
+not specific to spindle stress. The lifted tail of the growth panel is mostly this one
+signal repeated over six benomyl traits (two doses × three time points) measured on the
+same strains, not independent hits. A 1-bp change in an AT-rich CDEII is the kind of
+homopolymer length difference short-read assemblies get wrong, so this is a candidate to
+check on long-read assemblies, not a finding. The same applies to the CEN4 −8 bp allele
+(the S288C length class) with hydroxyurea and fluconazole.
+
+In short: within the power of ~750 strains, natural centromere alleles have no detectable
+effect on growth under segregation stress or on nearby and kinetochore gene expression.
+With a minority class of 20–100 strains, effects of roughly 0.4 SD or more would have been
+seen; smaller effects, or effects confined to rare alleles carried by a handful of strains,
+cannot be excluded.
+:::
+
+---
+
+## Transposons around centromeres {#sec-transposons}
+
+```{r te-load}
+te <- load_transposons(params$data_dir)
+has_te <- !is.null(te)
+if (has_te) {
+  te_genomes <- sort(unique(te$elements$genome))
+  te_counts <- te$elements |> count(genome)
+  s288c_el <- filter(te$elements, genome == "S288C")
+  chk_miss <- filter(te$check, !recovered)
+  te_null_g <- filter(te$null, genome != "all", null == "tRNA-matched")
+  te_pool <- filter(te$null, genome == "all")
+  pool_of <- function(nl, w, col) te_pool[[col]][te_pool$null == nl & te_pool$window_kb == w]
+  te_poly <- filter(te$sites, polymorphic)
+  te_near5 <- te$summary |> group_by(centromere) |>
+    summarise(n_with = sum(n_5kb > 0), te = median(nearest_te), trna = median(nearest_trna), .groups = "drop")
+  all5 <- te_near5$centromere[te_near5$n_with == length(te_genomes)]
+  cfa5 <- filter(te$near, genome == "CFA", centromere == "CEN5", distance <= 1000)
+  cfa5_gap <- te$calls |> filter(source_genome == "CFA", centromere == "CEN5", call == "absent") |>
+    pull(gap)
+}
+```
+
+Point centromeres descend from Ty5 LTRs (Haase 2026), and Ty1 and Ty3 integrate upstream
+of tRNA genes. That raises two questions for the strains here: are Ty elements and solo
+LTRs closer to centromeres than expected, and are any of them insertions that only some
+strains carry? Every Ty1–Ty5 element and solo LTR was annotated in the ten assemblies and
+S288C. The queries were the internal region of one S288C element per family and all
+`r if (has_te) sum(grepl("^LTR", names(read_fasta(file.path(params$repo, "data/ty_reference.fasta"))))) else "–"`
+full-length S288C LTRs (SGD), searched with BLAST. A hit counts when it covers ≥ 70 % of a
+query at ≥ 80 % identity. Abutting hits are joined into one element: a full element (≥ 70 %
+of the internal region present), a truncated one, or a solo LTR. This gives
+`r if (has_te) paste(min(te_counts$n), "to", max(te_counts$n)) else "–"` elements per
+genome. On S288C, all 50 annotated Ty elements and all full-length LTRs are recovered.
+`r if (has_te) nrow(chk_miss) else "–"` of the `r if (has_te) nrow(te$check) else "–"`
+SGD features within 20 kb of a centromere are missed, all of them LTR fragments of
+`r if (has_te) paste(min(chk_miss$length), "to", max(chk_miss$length)) else "–"` bp, below
+the 70 % rule.
+
+```{r fig-te-map}
+#| eval: !expr has_te
+#| column: page
+#| fig-width: 12
+#| fig-height: 10
+#| fig-cap: "Ty elements (bars: full or truncated) and solo LTRs (dots) within ±20 kb of each centromere, coloured by family; grey ticks are tRNA genes. Coordinates are oriented so the CDEI side is on the left. Hover for coordinates, distance and strand."
+p_te <- plot_te_map(te$near, te$trna, te_genomes)
+save_fig(p_te, "fig_d1_te_map", 12, 10)
+as_plotly(p_te, 900)
+```
+
+Being near a centromere is only meaningful against a null that respects how Ty elements
+choose where to insert. For each genome, 1,000 random positions were drawn, about 62 per
+centromere. Each position matches that centromere's distance to the nearest tRNA gene
+(±10 %) and lies at least 20 kb from contig ends and from every centromere. The statistic
+is the number of elements within ±1, ±5 and ±20 kb summed over the 16 centromeres; the
+null distribution is 10,000 such sums, each built from one matched position per
+centromere. A uniform null (no tRNA matching) is shown next to it.
+
+```{r fig-te-null}
+#| eval: !expr has_te
+#| column: page
+#| fig-width: 11
+#| fig-height: 4.8
+#| fig-cap: "Elements near the 16 centromeres of each genome (dot) against the tRNA-matched and uniform nulls (5–95 % bars, + = mean). Hover for p."
+p_tn <- plot_te_null(te$null)
+save_fig(p_tn, "fig_d2_te_null", 11, 4.8)
+as_plotly(p_tn, 440)
+```
+
+```{r tbl-te-sites}
+#| eval: !expr has_te
+#| tbl-cap: "Insertion sites near a centromere that are present in some strains and empty in others, decided at the orthologous position. The 300 bp on each side of the element are searched in every other genome: flanks that abut = empty site, flanks around an annotated element = present. Unresolved: a flank has no unique hit; gap_no_te: the flanks enclose sequence that is not a called element (usually an LTR fragment)."
+te_poly |>
+  rowwise() |>
+  mutate(Present = paste(te_genomes[startsWith(c_across(all_of(te_genomes)), "present")], collapse = ", "),
+         Element = paste(unique(sub("^present:", "", c_across(all_of(te_genomes))[
+           startsWith(c_across(all_of(te_genomes)), "present")])), collapse = "; "),
+         Other = paste(te_genomes[!startsWith(c_across(all_of(te_genomes)), "present") &
+                                    c_across(all_of(te_genomes)) != "absent"], collapse = ", ")) |>
+  ungroup() |>
+  arrange(factor(centromere, levels = CEN_LEVELS), distance) |>
+  transmute(Centromere = centromere, `Distance (bp)` = distance, Side = side, Element, Present,
+            `Empty in` = n_absent, `Not decided` = Other) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+**No enrichment that survives the right null.** In no single genome does the count
+near the centromeres leave the tRNA-matched null at any window (smallest p
+`r if (has_te) signif(min(te_null_g$p), 2) else "–"`). Summed over the 11 genomes, ±5 kb
+holds `r if (has_te) pool_of("tRNA-matched", 5, "observed") else "–"` elements against
+`r if (has_te) fmt(pool_of("tRNA-matched", 5, "null_mean")) else "–"` expected, and the
+count is above the null mean in `r if (has_te) pool_of("tRNA-matched", 5, "genomes_above_null") else "–"`
+of 11 genomes. The genomes are not independent replicates, though: most of these elements
+are shared by descent, so the same insertion is counted up to eleven times. The
+consistency reflects shared history, and the pooled p-value is not reported as a result.
+The tRNA matching matters. Uniform positions would put the ±20 kb count at
+`r if (has_te) round(pool_of("tRNA-matched", 20, "observed") / pool_of("uniform", 20, "null_mean"), 1) else "–"`×
+expectation; matched positions bring it to
+`r if (has_te) round(pool_of("tRNA-matched", 20, "ratio"), 1) else "–"`×. Centromeres sit
+closer to tRNA genes than random positions do, and the nearest element is usually the one
+by the nearest tRNA (median nearest element vs nearest tRNA:
+`r if (has_te) with(filter(te_near5, centromere == "CEN14"), paste0(fmt(te / 1000), " vs ", fmt(trna / 1000), " kb")) else "–"`
+at CEN14, `r if (has_te) with(filter(te_near5, centromere == "CEN16"), paste0(fmt(te / 1000), " vs ", fmt(trna / 1000), " kb")) else "–"`
+at CEN16). Every genome has an element within 5 kb of
+`r if (has_te) paste(all5, collapse = ", ") else "–"`, and each of these is the same
+tRNA-associated insertion in all strains. Right at the centromere, elements are scarce:
+one within 1 kb in all 176 loci, against
+`r if (has_te) fmt(pool_of("uniform", 1, "null_mean")) else "–"` expected under the uniform
+null but `r if (has_te) fmt(pool_of("tRNA-matched", 1, "null_mean")) else "–"` under the
+matched one. That is too few to call a depletion.
+
+**Polymorphic insertions.** `r if (has_te) nrow(te_poly) else "–"` of the
+`r if (has_te) nrow(te$sites) else "–"` sites within 20 kb of a centromere are present in
+some strains and empty in others; most are carried by one or two strains. The closest is a
+solo Ty1 LTR in CFA, `r if (has_te && nrow(cfa5)) cfa5$distance[1] else "–"` bp from
+CEN5 on the CDEI side. In CFA the LTR is flanked on both sides by `CTACA`, the 5-bp
+target-site duplication Ty1 makes; in the other ten genomes the two flanks abut with a
+single copy (overlap `r if (has_te && length(cfa5_gap)) paste(unique(abs(cfa5_gap)), collapse = "–") else "–"` bp
+by BLAST, whose element boundary here includes one base of the duplication). So this is
+a recent insertion in CFA, not a deletion in the others. CFA's CEN5 itself is unchanged (@sec-cdeii-steps), so an
+LTR this close does not disrupt the CDE. Whether it affects chromosome V segregation is
+not something this data can answer. At one CEN11 site, CNT carries a full Ty1 where other
+strains have a solo LTR, the expected product of LTR–LTR recombination excising the
+internal region. The only Loegler 2025 structural-variant hotspot that reaches a
+centromere is `r if (has_te && nrow(te$s5)) paste0("region ", te$s5$region[1], " (", te$s5$type[1], ", chrIII ", te$s5$start[1] / 1000, "–", te$s5$end[1] / 1000, " kb)") else "–"`,
+which spans CEN3 and is flagged for Ty, LTR and tRNA content. CEN3 also has the most
+polymorphic sites here (`r if (has_te) sum(te_poly$centromere == "CEN3") else "–"`).
+
+Limits: ten genomes, so a site seen in one strain is a single observation. LTR fragments
+below the 70 % rule are not counted (they show up as `gap_no_te`). A flank that falls in
+repeated sequence leaves the site undecided rather than called.
+:::
+
+---
+
+## CDE-like motifs in Ty LTRs {#sec-ltr-cde}
+
+```{r lc-load}
+lc <- load_ltr_cde(params$data_dir)
+has_lc <- !is.null(lc)
+if (has_lc) {
+  lc_uniq <- distinct(lc$scores, seq_id, .keep_all = TRUE)
+  lc_ctl <- lc$control
+  ctl_of <- function(ctrl, set, motif, col) lc_ctl[[col]][lc_ctl$control == ctrl & lc_ctl$set == set & lc_ctl$motif == motif]
+  lc_pos_miss <- filter(lc$pos, !found)
+  lc_off_cen <- filter(lc$units, is.na(centromere))
+  lc_units_g <- count(lc$units, genome)
+  lc_shuf_fam <- filter(lc_ctl, control == "shuffled", motif == "cdei", set != "unique LTRs (all)")
+  lc_gen_g <- filter(lc_ctl, control == "genomic", motif == "cdei", set != "all genomes LTRs")
+  lc_bce <- filter(lc_gen_g, set == "BCE LTRs")
+  lc_max3 <- max(lc_uniq$best_cdeiii)
+}
+```
+
+If point centromeres descend from Ty5 LTRs (Haase 2026), present-day LTRs might still
+carry CDE-like motifs: dormant proto-centromeres. Every LTR from @sec-transposons was
+scanned on both strands with the CDEI and CDEIII matrices used for the CDE annotation.
+That is `r if (has_lc) nrow(lc$scores) else "–"` LTRs: the solo LTRs plus both LTRs of
+each full element, `r if (has_lc) nrow(lc_uniq) else "–"` distinct sequences. A *hit* scores
+at least as well as the weakest S288C element minus 2 (CDEI ≥
+`r if (has_lc) lc$thr$cdei_min else "–"`, CDEIII ≥ `r if (has_lc) lc$thr$cdeiii_min else "–"`).
+A *unit* is a CDEI hit followed on the same strand by a CDEII-like spacer
+(`r if (has_lc) paste0(lc$thr$cdeii_min_len, "–", lc$thr$cdeii_max_len) else "–"` bp, AT ≥
+`r if (has_lc) lc$thr$cdeii_min_at else "–"`; S288C has 77–86 bp and 0.86–0.98) and then a
+CDEIII hit. CDEI's core CACRTG is an ordinary E-box, so counts are only meaningful against
+a background. Three were used: `r if (has_lc) lc$thr$n_shuffles else "–"` dinucleotide-preserving
+shuffles of each distinct LTR; windows of the same lengths drawn at random from each genome,
+avoiding Ty elements, tRNA genes and the centromeres ±1 kb; and, for S288C only, the same
+windows restricted to gene-free sequence (SGD annotation),
+`r if (has_lc) lc$thr$n_resamples else "–"` window sets each. The scanner was first run on
+the centromeres themselves. It finds a unit at `r if (has_lc) sum(lc$pos$found) else "–"` of
+`r if (has_lc) nrow(lc$pos) else "–"` loci, with the same CDEII as the CDE annotation. The
+two it misses fall outside the definitions:
+`r if (has_lc) paste(paste(lc_pos_miss$genome, lc_pos_miss$centromere), collapse = " and ") else "–"`
+(CDEIII just under the threshold, and a 105-bp CDEII with the 22-bp tandem duplication from
+@sec-cdeii-steps).
+
+```{r fig-ltr-cde}
+#| eval: !expr has_lc
+#| column: page
+#| fig-width: 11
+#| fig-height: 4.4
+#| fig-cap: "Best CDEI and CDEIII score in each sequence: distinct Ty LTRs, one dinucleotide shuffle of each, and one set of random genomic windows of matched length. Dashed: hit threshold. Ticks: the scores of the 160 ScRAP centromere loci."
+p_lc <- plot_ltr_cde_scores(lc)
+save_fig(p_lc, "fig_e1_ltr_cde_scores", 11, 4.4)
+as_plotly(p_lc, 420)
+```
+
+```{r tbl-ltr-cde}
+#| eval: !expr has_lc
+#| tbl-cap: "Motif hits per kb in LTRs against each background. Shuffled: distinct LTR sequences; genomic and intergenic: all LTRs of the genome(s). Null: mean and 95 % range of the background; p: empirical two-sided (shuffles: 100 replicates, so p ≥ 0.02); q: BH within each background."
+lc_ctl |>
+  filter(set %in% c("unique LTRs (all)", "all genomes LTRs", "S288C LTRs")) |>
+  transmute(Background = control, Set = set, Motif = c(cdei = "CDEI", cdeiii = "CDEIII", units = "Unit")[motif],
+            Observed = obs, `Per kb` = obs_per_kb, `Null per kb` = null_mean_per_kb,
+            `Null 95 %` = paste0(null_q025, "–", null_q975), Ratio = ratio,
+            p = signif(p, 2), q = signif(q, 2)) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+**No proto-centromeres in the LTRs.** Not one LTR contains a unit, and not one contains
+a CDEIII hit (best CDEIII score in any LTR `r if (has_lc) fmt(lc_max3, 2) else "–"`, against a
+threshold of `r if (has_lc) lc$thr$cdeiii_min else "–"`). The genome-wide scan explains why
+this is not a matter of the threshold: across the 11 genomes, units occur
+`r if (has_lc) nrow(lc$units) else "–"` times and
+`r if (has_lc) nrow(lc_off_cen) else "–"` of them lie outside a centromere. That is
+`r if (has_lc) paste(sort(unique(lc_units_g$n)), collapse = " or ") else "–"` per genome, one
+per centromere, minus the two loci above. CDEIII-scoring 26-mers are themselves rare
+away from centromeres (null
+`r if (has_lc) format(ctl_of("genomic", "all genomes LTRs", "cdeiii", "null_mean_per_kb"), scientific = FALSE) else "–"`
+per kb in random genomic windows,
+`r if (has_lc) format(ctl_of("intergenic", "S288C LTRs", "cdeiii", "null_mean_per_kb"), scientific = FALSE) else "–"`
+in S288C gene-free sequence), and the full unit picks out centromeres alone.
+
+**CDEI-like sites are depleted, not enriched.** LTRs carry
+`r if (has_lc) fmt(ctl_of("shuffled", "unique LTRs (all)", "cdei", "obs_per_kb"), 2) else "–"`
+CDEI hits per kb against
+`r if (has_lc) fmt(ctl_of("shuffled", "unique LTRs (all)", "cdei", "null_mean_per_kb"), 2) else "–"`
+in their own shuffles (ratio `r if (has_lc) ctl_of("shuffled", "unique LTRs (all)", "cdei", "ratio") else "–"`).
+The ratio is below 1 in every family
+(`r if (has_lc) paste0(sub("unique LTRs \\((.*)\\)", "\\1", lc_shuf_fam$set), " ", lc_shuf_fam$ratio, collapse = ", ") else "–"`),
+and the observed rate lies outside the shuffle range in all of them. With 100 shuffles,
+p cannot fall below 0.02, so the BH q of 0.06 reflects the replicate count rather than
+the size of the effect. Against random genomic windows the ratio is
+`r if (has_lc) ctl_of("genomic", "all genomes LTRs", "cdei", "ratio") else "–"` (all genomes)
+and `r if (has_lc) ctl_of("intergenic", "S288C LTRs", "cdei", "ratio") else "–"` against S288C
+gene-free sequence. Most of the hits are one site, about 40–60 bp into the Ty1 delta LTR
+(`ATCAYATG`). The exception is
+BCE: its LTRs have `r if (has_lc) lc_bce$ratio else "–"`× the genomic rate, because many
+of its Ty1 solo LTRs carry the exact `ATCACATG` variant at that position (70 in BCE, 13 in
+S288C). This looks like a delta subfamily specific to BCE. It is a CDEI-like E-box, with
+nothing CDEII- or CDEIII-like downstream.
+
+So LTRs in today's *S. cerevisiae* hold no remnant CDE layout. A Ty5 origin of point
+centromeres (Haase 2026) would be much older than any LTR here. Within this species, a
+CEN-like hit that lands in an LTR would be new, not inherited. The candidate list for
+the locator's CEN-like scan is therefore empty, and any LTR hit there should be reported
+as such.
+
+Limits: thresholds are tied to the 16 S288C elements, so a degenerate ancestral CDE would
+fall below them. The figure shows the score distributions, not only the calls. Diverged
+LTR fragments below the 70 % rule of @sec-transposons were not scanned.
+:::
+
+---
+
+## Diversity at the centromere and its flanks {#sec-diversity}
+
+```{r dv-load}
+dv <- load_diversity(params$data_dir)
+has_dv <- !is.null(dv)
+if (has_dv) {
+  dv_pool <- filter(dv$summary, centromere == "all")
+  dv_per <- filter(dv$summary, centromere != "all")
+  pool <- function(el, col) dv_pool[[col]][dv_pool$element == el]
+  dv_br <- filter(dv$l3, status == "bridged")
+  dv_ex <- filter(dv$l3, status == "lifted")
+  dv_fl <- dv$win |> filter(!region %in% ELEMENTS) |> mutate(k = abs(offset))
+  dv_k <- dv_fl |> group_by(k) |> summarise(pi = median(pi), pi_sub = median(pi_sub), .groups = "drop")
+  dv_far <- dv_fl |> filter(k >= 10) |> group_by(centromere) |> summarise(far = median(pi))
+  dv_k1_above <- dv_fl |> filter(k == 1) |> left_join(dv_far, by = "centromere") |> summarise(sum(pi > far)) |> pull()
+  dv_cc_bad <- filter(dv$cross, abs(rel_diff) > 0.10)
+}
+```
+
+Is a centromere more or less variable than the DNA around it? Each S288C centromere ±2 kb
+was carried over to every assembly through a whole-genome alignment (minimap2, `asm5`)
+and our own liftover of its `cs` string. The 11 windows per centromere were aligned with
+MAFFT, and every column was given its S288C position. Columns were then split into
+CDEI, CDEII, CDEIII (S288C boundaries) and 20 windows of 100 bp on each side. π is the mean
+over sequence pairs of differences per comparable site. A pair counts a substitution
+per differing base and one event per indel, whatever its length. Truncated ends count
+as missing, not as indels. π~sub~ and the indel rate are the two parts.
+
+The liftover placed `r if (has_dv) sum(dv$l3$agree, na.rm = TRUE) else "–"` of
+`r if (has_dv) nrow(dv$l3) else "–"` loci on the same contig as the BLAST + CDE locus.
+`r if (has_dv) nrow(dv_ex) else "–"` lift base-to-base (both ends within
+`r if (has_dv) max(abs(c(dv_ex$d_start, dv_ex$d_end))) else "–"` bp).
+At the other `r if (has_dv) nrow(dv_br) else "–"`
+(`r if (has_dv) paste(paste(dv_br$strain, dv_br$centromere), collapse = ", ") else "–"`),
+minimap2 breaks its alignment at the centromere itself and resumes after it, on the same
+contig and strand. These are bridged: the window is taken across the gap, and MAFFT
+aligns it. CEN6 is unaligned in 6 of 10 assemblies, so `asm5` alone would lose the most
+variable sequence. All 160 windows lifted at full ±2 kb. As a check, CEN π from these
+window alignments matches the CEN-only alignment of @sec-variants within 10 % at
+`r if (has_dv) sum(abs(dv$cross$rel_diff) <= 0.10) else "–"` of 16 centromeres.
+`r if (has_dv && nrow(dv_cc_bad)) paste0("The exception, ", dv_cc_bad$centromere, " (", round(100 * dv_cc_bad$rel_diff), " %), comes entirely from how the two alignments place ", dv_cc_bad$explained_by, "'s indels: without ", dv_cc_bad$explained_by, " the difference is ", signif(100 * dv_cc_bad$rel_diff_without, 1), " %.") else ""`
+
+```{r fig-pi-profile}
+#| eval: !expr has_dv
+#| column: page
+#| fig-width: 11
+#| fig-height: 5
+#| fig-cap: "Nucleotide diversity along each centromere ±2 kb (11 genomes). Grey: one line per centromere, 100-bp windows; black: median. The shaded band is the centromere, drawn at a fixed width, with one point per centromere for each element and the median as a bar. √ scale, so zeros stay visible. Hover for the substitution and indel parts."
+p_dv <- plot_pi_profile(dv)
+save_fig(p_dv, "fig_f1_pi_profile", 11, 5)
+as_plotly(p_dv, 480)
+```
+
+```{r tbl-diversity}
+#| eval: !expr has_dv
+#| tbl-cap: "π per element against the flanks, over 16 centromeres. Flank: mean over the 40 flank windows of that centromere. Below flank: centromeres where the element's π is lower. p: Wilcoxon signed-rank test, element vs flank mean, 16 pairs (the one test of this section)."
+dv_pool |>
+  transmute(Element = element, `Median π` = signif(median_pi, 2), `Median flank π` = signif(median_flank_pi, 2),
+            `Below flank` = paste0(n_below_flank_pi, " / ", n_cen),
+            `Median π subst.` = signif(median_pi_sub, 2), `Median indel rate` = signif(median_indel_rate, 2),
+            `Flank indel rate` = signif(median_flank_indel_rate, 2), p = signif(wilcoxon_p, 2)) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+**CDEII is the most variable sequence in the region.** Its median π
+(`r if (has_dv) signif(pool("CDEII", "median_pi"), 2) else "–"`) is about
+`r if (has_dv) round(pool("CDEII", "median_pi") / pool("CDEII", "median_flank_pi")) else "–"`×
+the flank mean. It is higher at every centromere, and above every one of its own 40 flank
+windows at `r if (has_dv) sum(dv_per$element == "CDEII" & dv_per$percentile_pi == 100) else "–"`
+of 16. Substitutions make most of it. The indel rate
+(`r if (has_dv) signif(pool("CDEII", "median_indel_rate"), 2) else "–"` per site) is
+`r if (has_dv) round(pool("CDEII", "median_indel_rate") / pool("CDEII", "median_flank_indel_rate")) else "–"`×
+the flanks, the length changes of @sec-cdeii-steps. CDEII is constrained in length and
+AT content, not in sequence, so it diverges as fast as unconstrained DNA, or faster.
+
+**CDEI is invariant, CDEIII nearly so.** CDEI has π = 0 at
+`r if (has_dv) sum(dv_per$element == "CDEI" & dv_per$pi == 0) else "–"` of 16 centromeres.
+With 8 bp it cannot reach significance against the flanks (p =
+`r if (has_dv) signif(pool("CDEI", "wilcoxon_p"), 2) else "–"`). CDEIII is invariant at
+`r if (has_dv) sum(dv_per$element == "CDEIII" & dv_per$pi == 0) else "–"` centromeres but
+carries single substitutions at others. Its median
+(`r if (has_dv) signif(pool("CDEIII", "median_pi"), 2) else "–"`) is above the flank mean
+(p = `r if (has_dv) signif(pool("CDEIII", "wilcoxon_p"), 2) else "–"`). The comparison is
+against the flanks next to it, though, and those are not neutral either (next paragraph).
+The protein-binding cores (CDEI CACRTG, CDEIII CCG) do not vary (@sec-kinetochore).
+
+**Diversity rises towards the centromere.** Flank π is
+`r if (has_dv) signif(dv_k$pi[dv_k$k == 1], 2) else "–"` in the 100 bp next to the CDEs,
+`r if (has_dv) signif(dv_k$pi[dv_k$k == 2], 2) else "–"` one window out, and about
+`r if (has_dv) signif(median(dv_k$pi[dv_k$k >= 10]), 1) else "–"` beyond 1 kb (medians over
+32 flanks). It is mostly substitutions, and it is not one centromere: the innermost window
+is above its own centromere's far-flank median in
+`r if (has_dv) dv_k1_above else "–"` of 32 flanks. Bensasson 2008 found that yeast
+centromeres themselves diverge fast. Here the excess also reaches a few hundred bp into
+the flanks. Several explanations fit and cannot be separated here: recombination suppressed near the centromere, the AT-rich low-complexity sequence
+next to it, and the transposon and tRNA landmarks of @sec-transposons. Against near-CEN
+flanks, CDEII is still about
+`r if (has_dv) round(pool("CDEII", "median_pi") / dv_k$pi[dv_k$k == 1], 1) else "–"`× higher.
+
+Limits: 11 genomes, one sequence per assembly (collapsed heterozygotes included). π in
+CDEI rests on 8 sites per centromere.
+:::
+
+---
+
+## CDEII grammar and DNA shape {#sec-cdeii-grammar}
+
+```{r gr-load}
+gr <- load_grammar(params$data_dir)
+has_gr <- !is.null(gr)
+if (has_gr) {
+  gr_pool <- filter(gr$grammar_null, centromere == "all")
+  gp <- function(st, nl, col = "p", set_ = "modal")
+    gr_pool[[col]][gr_pool$statistic == st & gr_pool$null == nl & gr_pool$set == set_]
+  sh_pool <- filter(gr$shape_null, centromere == "all", set == "modal")
+  sp <- function(st, nl, col = "p") sh_pool[[col]][sh_pool$statistic == st & sh_pool$null == nl]
+  vs_all <- filter(gr$shape_variants_summary, centromere == "all")
+  es_all <- filter(gr$shape_events_summary, centromere == "all")
+  va <- function(f, col, set_ = "Helsen") vs_all[[col]][vs_all$feature == f & vs_all$set == set_]
+  ea <- function(f, nl, col) es_all[[col]][es_all$feature == f & es_all$null == nl]
+  n_single <- sum(gr$shape_variants$set == "Helsen" & gr$shape_variants$n_subs == 1)
+  med_single <- gr$shape_variants |> filter(set == "Helsen", n_subs == 1) |>
+    summarise(across(starts_with("pct_"), median))
+}
+fmt_p <- function(x) if (is.na(x)) "–" else format(signif(x, 2), scientific = x < 1e-3)
+```
+
+@sec-diversity showed that CDEII changes fast in sequence but keeps its length and AT
+content. Does it keep anything else? Two candidates come from the CDEII literature:
+**A-tracts** (runs of A/T without a TpA step, which narrow the minor groove and bend
+DNA) and their **phasing** about one helical turn apart, which could help CDEII wrap the
+Cse4 nucleosome. Both are compared with two nulls of the same length and AT content.
+Dinucleotide shuffles keep the dinucleotide composition and break any order. S288C
+windows with AT within ±2 % (≥ 2 kb from a centromere) keep real-DNA structure, but at
+CDEII's AT content of ~90 % they are rare. 200 of each per CDEII. The test set is the
+population's modal allele per centromere (Helsen SD4, as in @sec-cdeii-steps); S288C gives
+the same results (`grammar_null.tsv`).
+
+An A-tract here is a run of ≥ 4 A/T with no TpA (`AAAATTTT` is one tract, `TTTTAAAA` two).
+The phasing score is the fraction of tract-centre pairs up to 42 bp apart that sit within
+±1 bp of a multiple of 10.5 bp. The second periodicity measure is the power of the AA/TT
+dinucleotide signal at periods of 10–11 bp (1 = white noise).
+
+```{r fig-grammar-null}
+#| eval: !expr has_gr
+#| column: page
+#| fig-width: 12
+#| fig-height: 5.5
+#| fig-cap: "A-tract statistics of the 16 modal CDEII alleles (black diamonds) against their nulls (coloured: median and 5–95 % of 200 sequences each). Hover for values and the per-centromere empirical p."
+p_gr <- plot_grammar_null(gr)
+save_fig(p_gr, "fig_f2_atract_phasing", 12, 5.5)
+as_plotly(p_gr, 500)
+```
+
+```{r tbl-grammar}
+#| eval: !expr has_gr
+#| tbl-cap: "Across the 16 centromeres: median of (observed − null median), centromeres where the observed value is higher, and the Wilcoxon signed-rank p (16 pairs)."
+gr_pool |> filter(set == "modal") |>
+  transmute(Statistic = unname(GRAMMAR_LABELS[statistic]),
+            Null = ifelse(null == "shuffle", "Dinucleotide shuffles", "AT-matched windows"),
+            `Obs − null` = signif(obs, 2), Higher = paste0(n_higher, " / ", n_cen), p = signif(p, 2)) |>
+  filter(!is.na(Statistic)) |>
+  knitr::kable()
+```
+
+**Shape.** DNAshapeR (pentamer model) predicts minor-groove width (MGW), propeller twist
+(ProT), roll and helix twist (HelT) along each CDEII. The two terminal bases or steps get
+no value.
+
+```{r fig-shape-profiles}
+#| eval: !expr has_gr
+#| fig-width: 8
+#| fig-height: 7
+#| fig-cap: "Predicted DNA shape along the 16 modal CDEII alleles (grey) and their median (black, where ≥ 8 alleles have the position). Alleles are 77–88 bp, so position aligns only the CDEI end."
+p_sp <- plot_shape_profiles(gr)
+save_fig(p_sp, "fig_f2_shape_profiles", 8, 7)
+as_plotly(p_sp, 650)
+```
+
+```{r tbl-shape-null}
+#| eval: !expr has_gr
+#| tbl-cap: "Shape summaries of the 16 modal CDEII alleles against the nulls: median (observed − null median), centromeres higher, Wilcoxon p. Narrow: fraction of positions with MGW < 4 Å."
+lab <- c(mean_mgw = "Mean MGW (Å)", frac_narrow = "Narrow-groove fraction", mean_prot = "Mean ProT (°)")
+sh_pool |>
+  transmute(Summary = lab[statistic], Null = ifelse(null == "shuffle", "Dinucleotide shuffles", "AT-matched windows"),
+            `Obs − null` = signif(obs, 2), Higher = paste0(n_higher, " / ", n_cen), p = signif(p, 2)) |>
+  knitr::kable()
+```
+
+**Do natural variants keep the shape?** Helsen SD4 has
+`r if (has_gr) va("MGW", "n") else "–"` CDEII alleles that differ from the modal allele by
+1–10 substitutions and no indel. For each, the shape distance to the modal allele (mean
+|Δ| over positions) is compared with 200 mutants that carry the same substitutions
+(same b1 → b2) at random positions of the same base. The null is calibrated: a mutant
+drawn from the null itself gets a uniform percentile (KS p ≥
+`r if (has_gr) signif(min(vs_all$calib_ks_p[vs_all$set == "Helsen"]), 2) else "–"`).
+
+Alleles share substitutions, though: a substitution carried by many alleles is counted
+many times. The second test therefore uses each **unique substitution event** (centromere,
+position, b1 → b2) once: `r if (has_gr) ea("MGW", "base", "n_events") else "–"` events. Its
+shape change is ranked among all single mutants b1 → b2 at the other positions carrying
+b1, exhaustively. The third test ranks it only among positions in the same trinucleotide
+context (`r if (has_gr) ea("MGW", "trinuc", "n_events") else "–"` events with ≥ 5 such
+positions). Mutation rates in yeast depend on the neighbouring bases. This last
+comparison removes that.
+
+```{r fig-shape-variants}
+#| eval: !expr has_gr
+#| column: page
+#| fig-width: 11
+#| fig-height: 6
+#| fig-cap: "Where natural substitutions rank among null mutations by shape change (0 = the smallest change). With no preference the histograms are flat (dashed line). Top: Helsen alleles against spectrum-matched mutants. Middle and bottom: unique substitution events, against every same-base position and every same-trinucleotide position."
+p_sv <- plot_shape_variants(gr)
+save_fig(p_sv, "fig_f2_shape_variants", 11, 6)
+as_plotly(p_sv, 560)
+```
+
+```{r tbl-shape-variants}
+#| eval: !expr has_gr
+#| tbl-cap: "Median percentile of natural shape change among null mutations (< 0.5 = smaller than random) and one-sided Wilcoxon p (percentile below 0.5)."
+bind_rows(
+  vs_all |> filter(set == "Helsen") |> transmute(Test = "Alleles, spectrum null", Feature = feature, n, median_pct, p_less),
+  es_all |> transmute(Test = ifelse(null == "base", "Events, same base", "Events, same trinucleotide"),
+                      Feature = feature, n = n_events, median_pct, p_less)) |>
+  mutate(median_pct = signif(median_pct, 2), p_less = signif(p_less, 2)) |>
+  tidyr::pivot_wider(names_from = Feature, values_from = c(median_pct, p_less), names_glue = "{Feature} {.value}") |>
+  select(Test, n, starts_with("MGW"), starts_with("ProT"), starts_with("Roll"), starts_with("HelT")) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+**CDEII is richer in A-tracts than AT-rich DNA, but its tracts are not phased.** Against
+AT-matched genome windows, CDEII has more tracts at every centromere (median
++`r if (has_gr) signif(gp("n_tracts", "genomic", "obs"), 2) else "–"`, p =
+`r if (has_gr) fmt_p(gp("n_tracts", "genomic")) else "–"`). It also has more bases in
+tracts, and stronger AA/TT power at 10–11 bp
+(`r if (has_gr) gp("power", "genomic", "n_higher") else "–"`/16, p =
+`r if (has_gr) fmt_p(gp("power", "genomic")) else "–"`). Dinucleotide shuffles of CDEII
+itself keep that power (p = `r if (has_gr) fmt_p(gp("power", "shuffle")) else "–"`).
+The periodic AA/TT signal therefore comes from CDEII's dinucleotide make-up, not from how
+the dinucleotides are ordered. The phasing score does not differ from either
+null (p = `r if (has_gr) fmt_p(gp("phase", "shuffle")) else "–"` and
+`r if (has_gr) fmt_p(gp("phase", "genomic")) else "–"`): A-tracts do not sit one turn apart
+more often than chance.
+
+**Its order does one thing: it avoids long tracts.** Compared with its own shuffles,
+CDEII has slightly more tracts and more bases in them, but a shorter longest tract
+(median `r if (has_gr) signif(gp("max_tract", "shuffle", "obs"), 2) else "–"` bp, longer at
+only `r if (has_gr) gp("max_tract", "shuffle", "n_higher") else "–"` of 16, p =
+`r if (has_gr) fmt_p(gp("max_tract", "shuffle")) else "–"`). The same A/T content is split
+into many short tracts instead of a few long ones. The predicted shape follows: CDEII has a
+narrower minor groove and more negative propeller twist than AT-matched genome windows at
+every centromere. Against its own shuffles, only propeller twist stays lower
+(`r if (has_gr) sp("mean_prot", "shuffle", "n_higher") else "–"`/16 higher, p =
+`r if (has_gr) fmt_p(sp("mean_prot", "shuffle")) else "–"`); MGW does not (p =
+`r if (has_gr) fmt_p(sp("mean_mgw", "shuffle")) else "–"`). Both are what the A-tract
+arrangement predicts.
+
+**Variants do not preserve shape beyond their mutational context.** At the allele level,
+natural substitutions change shape less than the same substitutions placed elsewhere
+(median percentile
+`r if (has_gr) signif(va("Roll", "median_pct"), 2) else "–"`–`r if (has_gr) signif(va("ProT", "median_pct"), 2) else "–"`,
+p down to `r if (has_gr) fmt_p(min(vs_all$p_less[vs_all$set == "Helsen"])) else "–"`). That
+is mostly pseudo-replication. The `r if (has_gr) n_single else "–"` single-substitution
+alleles alone give medians of
+`r if (has_gr) paste(signif(range(unlist(med_single)), 2), collapse = "–") else "–"`. Counted once per unique event, a small preference remains for roll
+(median `r if (has_gr) signif(ea("Roll", "base", "median_pct"), 2) else "–"`, p =
+`r if (has_gr) fmt_p(ea("Roll", "base", "p_less")) else "–"`) and MGW (p =
+`r if (has_gr) fmt_p(ea("MGW", "base", "p_less")) else "–"`). Within the same trinucleotide
+context it is gone (all medians
+`r if (has_gr) paste(unique(signif(es_all$median_pct[es_all$null == "trinuc"], 2)), collapse = ", ") else "–"`,
+p ≥ `r if (has_gr) fmt_p(min(es_all$p_less[es_all$null == "trinuc"])) else "–"`). That histogram is slightly U-shaped, with an excess at both ends. Some events change shape less than their context would predict and some change it more, and the two balance out.
+Frequent events are no more shape-neutral than rare ones (Spearman ρ with assembly
+count `r if (has_gr) signif(ea("Roll", "base", "rho_freq"), 1) else "–"`). Where
+substitutions fall in CDEII is explained by their local sequence context. Predicted
+shape adds no constraint that is visible here.
+
+Limits: DNAshapeR is a pentamer model of free DNA, not of DNA on the Cse4 nucleosome or
+under CBF3. Indel alleles (the length steps of @sec-cdeii-steps) are not tested; comparing
+their phasing needs alignment-aware shape comparison. Helsen alleles share ancestry: the
+allele test counts related strains as independent, and in the per-event test one event may
+be a single mutation inherited by many strains or several independent ones.
+:::
+
+---
+
+## Centromere tree vs genome tree {#sec-trees}
+
+```{r tr-load}
+tr <- load_trees(params$data_dir)
+has_tr <- !is.null(tr)
+if (has_tr) {
+  tr_core <- filter(tr$core, is.na(strain))
+  tr_cmp <- tr$compare
+  tr_top <- tr$contrib |> group_by(strain) |> slice_max(contribution, n = 2, with_ties = FALSE) |>
+    summarise(top = paste0(centromere, " (", signif(contribution, 2), ")", collapse = ", "))
+  tr_disc <- tr$disc |> left_join(tr_top, by = "strain")
+  tr_sw <- tr$swap
+  tr_scan <- tr$scan
+}
+```
+
+Do the 16 centromeres tell the same strain history as the genome? The **centromere tree**
+uses the 16 per-centromere alignments of @sec-variants, concatenated
+(`r if (has_tr) max(tr$blocks$end) else "–"` columns, 11 taxa). The **genome tree** uses the
+minimap2 alignments of @sec-diversity, restricted to sites that each assembly covers with
+exactly one alignment (no paralogous Ty, subtelomeric or collapsed duplicate sequence) and
+that are not within 2 kb of a centromere, so the two trees share no sites.
+That leaves `r if (has_tr) format(sum(tr_core$core), big.mark = ",") else "–"` sites
+(`r if (has_tr) percent(sum(tr_core$core) / sum(tr_core$length), 0.1) else "–"` of the R64
+nuclear genome), `r if (has_tr) format(sum(tr_core$variable), big.mark = ",") else "–"` of
+them variable. Both matrices are K80 distances from the same code, and the trees are
+neighbour-joining, midpoint-rooted (ape). Two comparisons follow. Robinson–Foulds counts
+bipartitions present in one tree only. Mantel correlates the two distance matrices
+(Spearman, 9,999 permutations).
+
+```{r fig-tanglegram}
+#| eval: !expr has_tr
+#| fig-width: 9
+#| fig-height: 5
+#| fig-cap: "Genome tree (left) and centromere tree (right), neighbour-joining on K80 distances, midpoint-rooted; lines join the same strain."
+plot_tanglegram(tr, "fig_h1_tanglegram")
+```
+
+```{r tbl-tree-compare}
+#| eval: !expr has_tr
+#| tbl-cap: "Tree comparison. nRF = RF / 2(n − 3)."
+tr_cmp |> transmute(Taxa = n_taxa, RF = rf, `RF max` = rf_max, nRF = round(nrf, 2),
+                    `Mantel r` = round(mantel_r, 3), `Mantel p` = mantel_p) |> knitr::kable()
+```
+
+```{r tbl-discordance}
+#| eval: !expr has_tr
+#| tbl-cap: "Per strain: discordance = 1 − Spearman ρ between the strain's distances to the others in the centromere and genome matrices. Top centromeres: the two whose removal from the concatenation lowers the strain's discordance most (the drop in brackets)."
+tr_disc |> transmute(Strain = strain, Discordance = round(discordance, 3), `Top centromeres` = top) |>
+  knitr::kable()
+```
+
+::: {.callout-note}
+## Reading it
+**The centromeres follow the genome.** The two distance matrices correlate at Mantel
+r = `r if (has_tr) round(tr_cmp$mantel_r, 2) else "–"` (p =
+`r if (has_tr) tr_cmp$mantel_p else "–"`, the smallest possible with 9,999 permutations).
+Pairs that are close in the genome are close at their centromeres. The trees share the
+same clades: ADS + CFS, ANM + AVN, CCC + CFA, and BAH outside the rest. Yet
+`r if (has_tr) tr_cmp$rf else "–"` of `r if (has_tr) tr_cmp$rf_max else "–"` bipartitions
+differ (nRF `r if (has_tr) round(tr_cmp$nrf, 2) else "–"`). The deep, short internal branches
+of the genome tree are not resolved by 1.9 kb of centromere. The most visible move is S288C,
+which leaves its genome-tree position to join CCC + CFA. Per-strain discordance is highest for
+`r if (has_tr) paste(head(tr_disc$strain, 2), collapse = " and ") else "–"`.
+
+**Discordance at this size is not evidence of centromere-specific history.** We tested
+whether the read-out can find a known event: one strain was given another strain's
+sequence at the 4 centromeres where they differ most. The swapped strain should then
+become the most discordant, with those 4 centromeres at the top of its list (spec check 8).
+It passes on simulated data (tests). On the real alignment it mostly fails. For
+`r if (has_tr) paste(tr_sw$strain, "←", tr_sw$donor) else "–"` (the most concordant strain,
+the most distant donor), the most discordant strain becomes
+`r if (has_tr) tr_sw$most_discordant else "–"` (the donor). The top 4 centromeres include
+`r if (has_tr) length(intersect(strsplit(tr_sw$top_contributors, ",")[[1]], strsplit(tr_sw$swapped, ",")[[1]])) else "–"`
+of the 4 swapped. Over all `r if (has_tr) nrow(tr_scan) else "–"` strain/donor pairs, the
+swapped strain is the most discordant in
+`r if (has_tr) percent(mean(tr_scan$most_discordant)) else "–"`. All 4 swapped centromeres
+come out on top in `r if (has_tr) percent(mean(tr_scan$n_swapped_in_top == 4)) else "–"`
+(median `r if (has_tr) median(tr_scan$n_swapped_in_top) else "–"` of 4). With this little power,
+the discordances in the table, and the centromeres listed against them, are not read as
+introgression or conversion at particular centromeres. More genomes, or reads to resolve
+the collapsed assemblies, are needed before a per-centromere history can be called. Leave-one-out also dilutes
+redundant signal: when several centromeres agree, dropping any one changes little.
+:::
+
+---
+
+## Centromere length {#sec-length}
+
+```{r fig-length-dist}
+#| column: page
+#| fig-width: 12
+#| fig-height: 6
+#| fig-cap: "Distribution of centromere length (CDEI start to CDEIII end) per centromere. Colour is the number of assemblies with that length. Hover for the assemblies in each cell."
+dist_df <- length_distribution(aligned)
+p_dist <- ggplot(dist_df, aes(centromere, sequence_length, fill = n, text = text)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "plasma", name = NULL, trans = "sqrt",
+                       breaks = pretty_breaks(n = min(5, max(dist_df$n)))) +
+  scale_y_continuous(breaks = pretty_breaks(n = 8), expand = c(0, 0)) +
+  scale_x_discrete(expand = c(0, 0)) +
+  labs(x = "Centromeres", y = "Centromere length, bp") +
+  theme_cen() +
+  theme(panel.grid.major = element_blank(), axis.line.x = element_blank(),
+        legend.position = "right", legend.key.height = unit(1.6, "cm"),
+        legend.key.width = unit(0.35, "cm"))
+save_fig(p_dist, "fig02_length_distribution", 10, 6)
+as_plotly(p_dist, 560)
+```
+
+::: {.callout-note}
+## Reading it
+Each centromere has one dominant length — a single bright cell per column, at
+`r min(aligned$sequence_length[aligned$delta_length == 0])`–`r max(aligned$sequence_length[aligned$delta_length == 0])`
+bp where it matches S288C — with a few assemblies spread ±1–5 bp around it.
+`r n_distinct(dist_df$centromere[dist_df$n > 0 & dist_df$sequence_length > 125])`
+centromere has a length outside the usual window, the `r big$sequence_length` bp
+CEN16 described below. Unlike the earlier 748-strain heat map, there is no tail of
+short lengths: those were partial BLAST hits and cross-centromere matches, which the
+pipeline now removes or repairs.
+:::
+
+```{r fig-length}
+#| column: page
+#| fig-width: 12
+#| fig-height: !expr 1.6 + 0.42 * length(unique(d$aligned$assembly))
+#| fig-cap: "Centromere length (CDEI start to CDEIII end) in every assembly. Colour is the difference from the S288C element of the same centromere; numbers are the length in bp. Hover for details."
+len_df <- aligned |>
+  mutate(text = paste0("<b>", assembly, "</b> · ", clade,
+                       "<br>", centromere, ": ", sequence_length, " bp (S288C ", ref_length, ")",
+                       "<br>CDEII ", cdeii_length, " bp · ", contig_name))
+lim <- max(5, min(10, max(abs(len_df$delta_length))))
+p_len <- ggplot(len_df, aes(centromere, assembly, fill = delta_length, text = text)) +
+  geom_tile(colour = SURFACE, linewidth = 0.8) +
+  scale_fill_gradient2(low = DIV_LOW, mid = DIV_MID, high = DIV_HIGH, midpoint = 0,
+                       limits = c(-lim, lim), oob = squish,
+                       name = "Δ length vs S288C, bp") +
+  guides(fill = guide_colourbar(title.position = "top")) +
+  labs(x = NULL, y = NULL) +
+  theme_cen() +
+  theme(panel.grid.major = element_blank(), axis.line.x = element_blank(),
+        legend.key.width = unit(1.6, "cm"), legend.key.height = unit(0.3, "cm"))
+if (assembly_rows <= 30) {
+  p_len <- p_len + geom_text(aes(label = sequence_length,
+                                 colour = abs(delta_length) >= 0.7 * lim), size = 3) +
+    scale_colour_manual(values = c(`FALSE` = INK, `TRUE` = "white"), guide = "none")
+}
+save_fig(p_len, "fig03_length_vs_s288c", 11, 1.2 + 0.32 * assembly_rows)
+as_plotly(p_len, 150 + 42 * assembly_rows)
+```
+
+**How it was obtained.** Length is counted on the annotated locus (first base of
+CDEI to last base of CDEIII), not on the BLAST alignment, whose ends stop wherever
+the local alignment stops scoring.
+
+::: {.callout-note}
+## Reading it
+Most cells are within a few bp of S288C (median length
+`r median(aligned$sequence_length)` bp; `r pct(mean(abs(aligned$delta_length) <= 2))`
+of loci within ±2 bp). The columns that stand out are whole-centromere shifts shared
+by most strains — CEN4 is longer than S288C in nearly every assembly, because S288C
+carries a 7-bp deletion there (@sec-variants).
+
+The extreme is **`r big$assembly` `r big$centromere`, `r big$sequence_length` bp
+(+`r big$delta_length`)**: a `r big_ins$size`-bp insertion in CDEII
+(`r big_ins$alt`), a tandem duplication of the adjacent sequence. BLAST reported it
+as two overlapping pieces, and stitching them on their overlap would have collapsed
+the duplicate and reported an ordinary 117 bp centromere; reading the locus from
+the genome recovers it.
+:::
+
+---
+
+## GC content {#sec-gc}
+
+```{r fig-gc}
+#| column: page
+#| fig-width: 12
+#| fig-height: 5.5
+#| fig-cap: "GC content per centromere as a raincloud: points are assemblies, the half-violin their density. Dashed line: median over all loci. Hover a point for the assembly."
+rc <- raincloud_data(aligned, "GC")
+rc$points <- rc$points |>
+  mutate(text = paste0("<b>", assembly, "</b> · ", clade, "<br>", centromere,
+                       ": GC ", percent(GC, 0.1), " (S288C ",
+                       percent(gc_content(reference[as.character(centromere)]), 0.1), ")"))
+gc_median <- median(aligned$GC)
+p_gc <- ggplot() +
+  geom_hline(yintercept = gc_median, linetype = "dashed", colour = INK2, linewidth = 0.8) +
+  geom_polygon(data = rc$clouds, aes(x, y, group = centromere, fill = centromere,
+                                     colour = centromere), alpha = 0.35, linewidth = 0.5) +
+  geom_point(data = rc$points, aes(x, y, colour = centromere, text = text), size = 1.8) +
+  scale_fill_manual(values = CEN_COLOURS, guide = "none") +
+  scale_colour_manual(values = CEN_COLOURS, guide = "none") +
+  scale_x_continuous(breaks = seq_along(rc$cens), labels = rc$cens,
+                     expand = expansion(add = 0.4)) +
+  scale_y_continuous(labels = label_percent(accuracy = 1)) +
+  labs(x = "Centromeres", y = "GC content") +
+  theme_cen() +
+  theme(panel.grid.major = element_blank(), legend.position = "none",
+        axis.line = element_line(colour = INK2, linewidth = 0.4),
+        axis.ticks = element_line(colour = INK2, linewidth = 0.3))
+save_fig(p_gc, "fig04_gc_raincloud", 11, 5.5)
+as_plotly(p_gc, 540)
+```
+
+::: {.callout-note}
+## Reading it
+Median GC is **`r percent(gc_median, 0.1)`** (S288C elements:
+`r percent(median(gc_content(reference)), 0.1)`), against ~38 % genome-wide: the
+element is dominated by the AT-rich CDEII. GC differs much more *between*
+centromeres than *within* one — CEN13 sits near 20 %, CEN12 and CEN16 near 12 %, and
+the strains of each centromere cluster around its own value. No centromere shows two
+clusters; the CEN14 and CEN15 bimodality of the earlier 748-strain raincloud came
+from cross-centromere hits. With `r n_asm` points per centromere the half-violins are
+rough sketches of the density; they become informative as assemblies are added.
+:::
+
+---
+
+## Sequence logos {#sec-logos}
+
+**How they were obtained.** In each centromere's alignment a position frequency
+matrix counts each base per column (gaps excluded). Each column is scored by its
+**information content**
+
+$$
+I_i \;=\; 2 + \sum_{b \in \{A,C,G,T\}} p_{ib}\log_2 p_{ib} \quad \text{bits},
+$$
+
+and letters are drawn with height $p_{ib} \cdot I_i$: total stack height is
+conservation, relative letter height is which base. With `r n_asm` sequences per
+centromere most columns are fully conserved and stand at 2 bits; the informative
+part is where they are not.
+
+```{r fig-logos}
+#| fig-cap: "Sequence logos of all 16 centromeres across the assemblies. Boxes: CDEI (left) and CDEIII (right), placed from the S288C element in each alignment; CDEII lies between them."
+#| column: page
+logo_df <- boxes |> mutate(seq_group = factor(as.character(centromere), CEN_LEVELS))
+p_logo <- ggseqlogo(logo_matrices(aligned), method = "bits", ncol = 1)
+# ggseqlogo facets in text order (CEN1, CEN10, ...); refacet in chromosome order
+p_logo$data$seq_group <- factor(p_logo$data$seq_group, CEN_LEVELS)
+for (i in seq_along(p_logo$layers)) {
+  if (is.data.frame(p_logo$layers[[i]]$data) && "seq_group" %in% names(p_logo$layers[[i]]$data)) {
+    p_logo$layers[[i]]$data$seq_group <- factor(p_logo$layers[[i]]$data$seq_group, CEN_LEVELS)
+  }
+}
+p_logo <- suppressMessages(p_logo +
+  facet_wrap(~seq_group, ncol = 1, scales = "free_x") +
+  geom_rect(data = logo_df, aes(xmin = xmin, xmax = xmax, ymin = -0.05, ymax = 2.08),
+            inherit.aes = FALSE, fill = NA, colour = INK, linewidth = 0.45) +
+  scale_x_continuous(breaks = seq(0, 200, 10), expand = expansion(add = 0.5)) +
+  scale_y_continuous(breaks = c(0, 2))) +
+  labs(x = "Alignment column", y = "Information content, bits") +
+  theme_cen(10) +
+  theme(panel.grid.major = element_blank(), axis.line.x = element_blank(),
+        strip.text = element_text(margin = margin(b = 1)),
+        panel.spacing.y = unit(0.15, "cm"))
+save_fig(p_logo, "fig05_logos", 13, 17)
+knitr::include_graphics("figures/fig05_logos.png")
+```
+
+::: {.callout-note}
+## Reading it
+CDEI and CDEIII stand at full height in every centromere; the dips are in between.
+CDEII looks as it should — **stacks of A and T and almost nothing else**, with long
+homopolymer runs — and its few full-height C and G letters are position-specific
+signals worth noting. Column numbers are alignment coordinates and are not
+comparable between centromeres.
+:::
+
+---
+
+## Variants against S288C {#sec-variants}
+
+```{r fig-variants}
+#| column: page
+#| fig-width: 12
+#| fig-height: !expr 1.5 + 8 * (0.45 + 0.24 * length(unique(d$aligned$assembly)))
+#| fig-cap: "Every difference from S288C. One row per assembly, one panel per centromere; shaded bands are CDEI and CDEIII. Hover for the position and the bases."
+aln_len <- aligned |> distinct(centromere, ref_aligned_seq) |>
+  transmute(centromere, len = nchar(ref_aligned_seq))
+var_df <- variants |>
+  mutate(text = paste0("<b>", assembly, "</b> · ", clade, "<br>", centromere, " ",
+                       element, ", S288C position ", refpos, "<br>", type, ": ",
+                       ref, " → ", alt))
+rows_df <- expand_grid(aln_len, assembly = levels(aligned$assembly)) |>
+  mutate(assembly = factor(assembly, levels(aligned$assembly)))
+p_var <- ggplot() +
+  geom_rect(data = boxes, aes(xmin = xmin, xmax = xmax, ymin = 0.5, ymax = assembly_rows + 0.5),
+            fill = BAND) +
+  geom_segment(data = rows_df, aes(x = 1, xend = len, y = assembly, yend = assembly),
+               colour = AXIS, linewidth = 0.3) +
+  geom_tile(data = var_df, aes(col, assembly, fill = type, text = text),
+            width = 0.9, height = 0.72) +
+  scale_fill_manual(values = VARIANT_COLOURS, name = NULL, drop = FALSE) +
+  facet_wrap(~centromere, ncol = 2, scales = "free_x") +
+  labs(x = "Alignment column", y = NULL) +
+  theme_cen(10) +
+  theme(panel.grid.major = element_blank(), axis.text.y = element_text(size = 7))
+save_fig(p_var, "fig06_variant_map", 13, 2 + 8 * (0.35 + 0.16 * assembly_rows))
+as_plotly(p_var, 260 + 8 * (70 + 24 * assembly_rows)) |> layout(margin = list(b = 80))
+```
+
+**How it was obtained.** In each alignment, every column is compared with the S288C
+row: a base against a different base is a **substitution**, a base against a gap in
+S288C an **insertion**, a gap against an S288C base a **deletion**. Consecutive
+indel columns are one event.
+
+::: {.callout-note}
+## Reading it
+The map is mostly empty inside the bands and busy between them. Two kinds of
+pattern are worth telling apart:
+
+- **Columns where most strains differ** — the same variant in nearly every row.
+  These are places where **S288C carries the unusual allele**: CEN4's 7-bp
+  `TTTTAAT` insertion relative to S288C (S288C's CEN4 is its shortest, 111 bp),
+  and a handful of CDEIII positions in CEN3, CEN6 and CEN10.
+- **Variants in one or a few rows** — private or clade-level changes, which is
+  where strain-to-strain diversity actually shows.
+
+The two Wine/European assemblies (ADS, CFS) carry the fewest differences, consistent
+with S288C's largely European ancestry.
+:::
+
+```{r tbl-shared}
+#| tbl-cap: "Variants carried by at least 80 % of the assemblies: positions where S288C, not the strains, is the exception."
+events |>
+  group_by(centromere, element, refpos, type, ref, alt) |>
+  summarise(n = n_distinct(sample), .groups = "drop") |>
+  filter(n >= 0.8 * n_asm) |>
+  arrange(centromere, refpos) |>
+  transmute(Centromere = centromere, Element = element, `S288C position` = refpos,
+            Type = type,
+            `S288C` = if_else(type == "Insertion", "(none)", ref),
+            Strains = if_else(type == "Deletion", "(none)", alt),
+            `Assemblies` = paste0(n, "/", n_asm)) |>
+  knitr::kable()
+```
+
+---
+
+## Where variation sits: CDEI, CDEII, CDEIII {#sec-elements}
+
+```{r fig-elements}
+#| fig-width: 8
+#| fig-height: 4.5
+#| fig-cap: "Variants per kb of element, per centromere (points) and overall (black bar). Rates are per assembly-base: count ÷ (assemblies × element length in S288C)."
+el_df <- rates |>
+  mutate(text = paste0("<b>", centromere, " ", element, "</b><br>", n, " ",
+                       tolower(kind), " in ", n_assemblies, " assemblies<br>",
+                       fmt(per_kb), " per kb"))
+el_mean <- rate_mean |> mutate(text = paste0("<b>All centromeres, ", element, "</b><br>",
+                                             fmt(per_kb), " ", tolower(kind), " per kb"))
+p_el <- ggplot(el_df, aes(element, per_kb)) +
+  geom_point(aes(text = text), colour = SERIES1, alpha = 0.6, size = 2,
+             position = position_jitter(width = 0.15, height = 0, seed = 2)) +
+  geom_errorbar(data = el_mean, aes(element, ymin = per_kb, ymax = per_kb, text = text),
+                inherit.aes = FALSE, width = 0.45, linewidth = 0.8, colour = INK) +
+  facet_wrap(~kind, scales = "free_y") +
+  labs(x = NULL, y = "Per kb of element") +
+  theme_cen()
+save_fig(p_el, "fig07_element_rates", 9, 4)
+as_plotly(p_el, 430)
+```
+
+::: {.callout-note}
+## Reading it
+This is the comparison the analysis was built for, and it comes out as expected.
+Substitutions run at **`r fmt(rate_of("CDEII", "Substitutions"))` per kb in
+CDEII**, against `r fmt(rate_of("CDEIII", "Substitutions"))` in CDEIII and
+`r fmt(rate_of("CDEI", "Substitutions"))` in CDEI. **`r n_indel_cdeii` of
+`r n_indel` indel events fall in CDEII** — the protein-binding elements tolerate
+substitutions only, and few of those.
+
+Two cautions. The CDEIII rate is inflated by the positions where S288C is the odd
+one out (@tbl-shared): a single S288C-private base shows up as a variant in nearly
+every strain. And CDEI is 8 bp, so its rate rests on a handful of events.
+:::
+
+---
+
+## Substitution spectrum {#sec-spectrum}
+
+```{r fig-spectrum}
+#| fig-width: 8
+#| fig-height: 6.5
+#| fig-cap: "Substitutions from the S288C base to the strain's base. Top: counts. Bottom: the same counts divided by the number of assembly-sites where S288C has that base (per kb)."
+sp <- spectrum$total |>
+  mutate(text_n = paste0("<b>", class, "</b><br>", n, " substitutions"),
+         text_r = paste0("<b>", class, "</b><br>", fmt(per_kb), " per kb of S288C ",
+                         ref, " sites (", n, " / ", comma(sites), ")"))
+sp_long <- bind_rows(
+  sp |> transmute(class, value = n, text = text_n, measure = "Substitutions"),
+  sp |> transmute(class, value = per_kb, text = text_r, measure = "Per kb of sites")
+) |> mutate(measure = factor(measure, c("Substitutions", "Per kb of sites")))
+p_sp <- ggplot(sp_long, aes(class, value, text = text)) +
+  geom_col(fill = SERIES1, width = 0.6) +
+  facet_wrap(~measure, ncol = 1, scales = "free_y") +
+  labs(x = "S288C base \u2192 strain base", y = NULL) + theme_cen()
+save_fig(p_sp, "fig08_substitution_spectrum", 9, 6.5)
+as_plotly(p_sp, 600)
+```
+
+```{r fig-spectrum-cen}
+#| fig-width: 8
+#| fig-height: 6.5
+#| fig-cap: "Substitution counts by centromere and class."
+sp_cen <- spectrum$by_cen |>
+  filter(centromere %in% aligned$centromere) |>
+  mutate(text = paste0("<b>", centromere, " ", class, "</b><br>", n, " substitutions"))
+p_sp_cen <- ggplot(sp_cen, aes(class, centromere, fill = n, text = text)) +
+  geom_tile(colour = SURFACE, linewidth = 0.8) +
+  scale_fill_gradient(low = SEQ_LOW, high = SEQ_HIGH, name = "Substitutions",
+                      guide = guide_colourbar(title.position = "top")) +
+  scale_y_discrete(limits = rev) +
+  geom_tile(data = filter(sp_cen, n == 0), fill = BAND, colour = SURFACE, linewidth = 0.8) +
+  labs(x = "S288C base → strain base", y = NULL) +
+  theme_cen() +
+  theme(panel.grid.major = element_blank(), axis.line.x = element_blank(),
+        legend.key.width = unit(1.4, "cm"), legend.key.height = unit(0.3, "cm"))
+save_fig(p_sp_cen, "fig09_substitutions_by_centromere", 8, 6)
+as_plotly(p_sp_cen, 600)
+```
+
+**How it was obtained.** Every substitution is classed by S288C base → strain base.
+The bottom panel divides each class by its **opportunity**: the number of
+assembly-sites where S288C has that base and the strain has any base.
+
+```{r spectrum-numbers}
+at <- sp |> filter(class %in% c("A→T", "T→A"))
+top_rate <- sp |> slice_max(per_kb, n = 3)
+```
+
+::: {.callout-note}
+## Reading it
+In raw counts **A→T and T→A lead** (`r pct(sum(at$n) / sum(sp$n))` of all
+substitutions), the shape the earlier 748-strain figure showed. But A and T are
+also most of what there is to substitute. **Per available site the order changes:**
+the highest rates are `r paste0(top_rate$class, " (", fmt(top_rate$per_kb), ")", collapse = ", ")`
+per kb. The A↔T excess is mostly composition — abundant, not elevated — and the
+rare G and C positions of the centromere change at the higher per-site rate, led
+by the transition G→A.
+
+With `r n_asm` assemblies the per-site rates of C- and G-initiated classes rest on
+tens of events; they are the numbers most likely to move as more genomes are added.
+:::
+
+---
+
+## Split hits and duplicated loci {#sec-splits}
+
+```{r tbl-splits}
+#| tbl-cap: "Loci that BLAST reported in more than one piece."
+splits <- aligned |> filter(blast_pieces > 1)
+if (nrow(splits) == 0) {
+  knitr::kable(tibble(Note = "None."))
+} else {
+  splits |> transmute(Assembly = assembly, Centromere = centromere,
+                      `BLAST pieces` = blast_pieces,
+                      `Stitched BLAST length, bp` = blast_length,
+                      `Annotated length, bp` = sequence_length,
+                      `S288C length, bp` = ref_length) |>
+    knitr::kable()
+}
+```
+
+In a complete assembly a split hit is usually a structural change inside the
+centromere — here, the tandem duplication described in @sec-length — rather than a
+fragmented contig.
+
+---
+
+## What these figures do and do not establish {#sec-caveats}
+
+**Supported by these data:**
+
+- The pipeline finds exactly one locus per centromere in every assembly, on the
+  expected chromosome, including rearranged ones, with CDEI and CDEIII placed at
+  their motifs.
+- Variation concentrates in CDEII, both as substitutions and as all of the indels;
+  CDEI and CDEIII carry few substitutions and no indels.
+- The raw A↔T dominance of the spectrum is largely compositional.
+
+::: {.callout-caution}
+## Limits to keep in view
+
+1. **`r n_asm` assemblies.** Enough to validate the method and see the shape of each
+   statistic; not enough for population frequencies or for comparing clades.
+2. **Variants are differences from S288C, not mutations.** Without an outgroup
+   (*S. paradoxus*) the direction of change cannot be polarised, and @tbl-shared
+   shows S288C is itself the unusual allele at several positions.
+3. **Counts are per assembly, not per event.** Related strains share variants by
+   descent; nothing here corrects for the phylogeny.
+4. **Collapsed assemblies show one allele per centromere.**
+   `r sum(grepl("_collapsed", strains$assembly))` of `r n_asm` assemblies are
+   heterozygous genomes merged into one sequence; any heterozygosity at a centromere
+   is invisible in them.
+5. **The alignment is still the weak link.** MAFFT on 90 % AT sequence can shift
+   homopolymer runs; a shifted run turns one indel into a few apparent
+   substitutions. Lengths (@sec-length) do not depend on the alignment; the variant
+   map and spectrum do.
+:::
+
+**Next steps:** run the remaining ScRAP assemblies; add *S. paradoxus* to polarise
+the variants; join per-strain CDEII length and variant load to clade, ecology and
+the `Phenotypes_8391Traits/` growth traits.
+
+---
+
+## Figure files {#sec-index}
+
+Each figure is also written to `figures/` as PNG (300 dpi) and PDF.
+
+```{r tbl-index}
+#| tbl-cap: "Figure files written by this render."
+tibble(File = sort(list.files("figures", pattern = "\\.png$"))) |>
+  mutate(PDF = sub("png$", "pdf", File)) |>
+  knitr::kable()
+```

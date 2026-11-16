@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +11,19 @@ def load_config(path: str | Path) -> dict:
         raise FileNotFoundError(f"Config file not found: {path}")
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+
+def tool(bin_dir, name: str) -> str:
+    """Executable `name` from config dir `bin_dir`; `null`/empty -> taken from PATH."""
+    if not bin_dir:
+        return name
+    return str(Path(os.path.expandvars(str(bin_dir))).expanduser() / name)
+
+
+def tool_file(path, default: str) -> str:
+    """Executable given as a full path in the config; `null`/empty -> `default` from PATH."""
+    return os.path.expanduser(os.path.expandvars(str(path))) if path else default
 
 
 COLUMNS = [
@@ -37,7 +51,7 @@ def detect_format(path: Path) -> str:
 
 
 def load_data(path: str | Path, format: str = "auto") -> pd.DataFrame:
-    path = Path(path)
+    path = Path(path).expanduser()
     if not path.exists():
         raise FileNotFoundError(f"Data file not found: {path}")
 

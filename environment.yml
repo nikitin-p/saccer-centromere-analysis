@@ -1,0 +1,51 @@
+# conda env for the whole pipeline (Python analyses, external tools, R report).
+#   conda env create -f environment.yml      # or: mamba env create -f environment.yml
+#   conda activate centromere
+#   pip install -e . --no-deps               # the `centromere` package from src/
+# Every package checked to exist for linux-64 (2026-11-16); not solved here (see README).
+name: centromere
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  # Python
+  - python=3.12
+  - pip
+  - pandas>=2.2
+  - numpy>=1.26
+  - scipy>=1.11
+  - pyyaml>=6.0
+  - biopython>=1.83
+  - matplotlib>=3.8
+  - seaborn>=0.13
+  - plotly>=5.20
+  - python-kaleido>=1.0       # PNG/PDF export of plotly figures; needs Chrome (see README)
+  - logomaker>=0.8
+  - statsmodels>=0.14
+  - xlrd>=2.0                 # Peter 2018 .xls
+  - openpyxl>=3.1             # Loegler 2025 / Helsen .xlsx
+  - pytest>=7.0
+  # External tools
+  - blast>=2.14               # makeblastdb, blastn, tblastn
+  - mafft>=7.5
+  - minimap2>=2.26
+  - hmmer>=3.4                # hmmbuild, nhmmer
+  # R + report
+  - r-base=4.5                # bioconductor-dnashaper 1.38 is built for R 4.5
+  - r-dplyr
+  - r-tidyr
+  - r-readr
+  - r-readxl
+  - r-ggplot2
+  - r-scales
+  - r-patchwork
+  - r-ggdist
+  - r-ggseqlogo
+  - r-plotly
+  - r-ape
+  - r-vegan
+  - r-knitr
+  - r-rmarkdown
+  - bioconductor-dnashaper    # analysis F2 (scripts/dnashape.R)
+  - quarto>=1.4

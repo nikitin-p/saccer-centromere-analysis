@@ -11,18 +11,67 @@ Centromeres are chromosomal regions that recruit kinetochore proteins for chromo
 
 This project examines centromere structure and variability in 1011 yeast genomes ([Peter et al. 2018](https://www.nature.com/articles/s41586-018-0030-5)) to understand the "centromeric paradox" — how highly variable sequences perform a conserved function.
 
-## Installation
+## Quick start (cluster)
+
+Everything below runs from the repository root on Linux. Two genome sets are supported:
+**ScRAP 142** (O'Donnell et al. 2023, Zenodo [8210254](https://zenodo.org/records/8210254))
+and **Loegler 1086** (Loegler et al. 2025, Zenodo [15698884](https://zenodo.org/records/15698884)).
+Start with ScRAP: it is small and checks the whole chain.
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/saccer-centromere-analysis.git
-cd saccer-centromere-analysis
-
-# Install with conda (recommended)
-conda create -n centromere python=3.11
+# 1. Environment: Python, BLAST+, MAFFT, minimap2, HMMER, R (+ DNAshapeR), Quarto
+conda env create -f environment.yml          # mamba is much faster if available
 conda activate centromere
-conda install -c bioconda mafft
-pip install -e ".[dev]"
+pip install -e . --no-deps
+pytest -q                                    # unit tests (a few seconds)
+
+# 2. Data
+python scripts/download_data.py --set reference      # S288C genome, SGD GFF, Peter/Loegler/Helsen tables (~25 MB)
+python scripts/download_data.py --set scrap142       # streams 1.7 GB, keeps 142 assemblies (~0.5 GB)
+python scripts/download_data.py --set loegler1086    # streams 16.8 GB, keeps 1086 assemblies (~4 GB)
+
+# 3. Run (or submit: sbatch scripts/slurm_run_all.sh config.scrap142.yaml)
+bash scripts/run_all.sh config.scrap142.yaml
+# -> output/scrap142/report/report.html
+```
+
+**Downloads.** Archives are streamed from Zenodo and never stored; only the selected assemblies are
+written, gzipped, to `data/assemblies_<set>/<sample>.fasta.gz`, plus the sample table
+`data/samples_<set>.tsv` (`accession assembly strain`). One assembly per strain: ScRAP `collapsed`
+where it exists, else `HP0`; Loegler the final assembly from Table S2, `HP1` for phased isolates.
+`--haplotypes all` adds the other haplotypes as extra samples (they double-count diploids in
+population statistics). An interrupted download can be restarted; finished files are skipped. When
+the whole archive was read, its md5 is checked against Zenodo. For a quick test:
+`--limit 10` or `--strains ADS,CFS,...`; with a downloaded tarball: `--archive nuclear.tar.gz`.
+
+**Run.** `run_all.sh` runs every step in order and logs each to `output/<set>/logs/<step>.log`;
+`bash scripts/run_all.sh CONFIG --list` shows them. A finished step is skipped on rerun;
+`--from STEP` redoes STEP and everything after it, `--only STEP` just that step. Optional steps that
+need extra external data are off: `--with validate` (analysis A: Helsen 2026 SD4 + PCAn),
+`--with peter748,phenotypes` (G and phenotypes: Peter 2018 set, `config.peter748.yaml`).
+Programs come from PATH (config `blast_bin`, `minimap2`, `hmmer_bin: null`); `THREADS` sets BLAST
+threads, `align.workers` and `locate.threads` in the config the rest.
+
+**Report.** Rendered into `output/<set>/report/` from `results/report.qmd`. All numbers, tables
+and figures are computed from that set, but the prose was written for the first 10 ScRAP genomes
+(strain names such as ADS, CFA, BCE in the text) and has to be re-read against the new results.
+
+**Known limits.**
+- Plotly PNG/PDF export (step `pipeline`, `05_visualize`) needs Chrome for kaleido; without it
+  the figures are written as HTML and the step continues (`plotly_get_chrome` installs one).
+- Disk: BLAST DBs and uncompressed copies for analyses C/D/E take ~25 MB per genome
+  (~30 GB for Loegler 1086).
+- The H swap check uses ADS<-BAH; if a set lacks them, the most concordant strain and its most
+  genome-distant donor are used. The H power scan samples at most `trees.swap_scan_max_pairs`
+  ordered pairs (200).
+- A second locus of a CEN in one genome (usually a short AT-rich partial BLAST hit) is set aside
+  in `output/<set>/secondary_loci.tsv`; only the best locus per sample and CEN is analysed.
+
+## Installation (local, without conda)
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e ".[dev]" openpyxl
+# plus BLAST+, MAFFT, minimap2, HMMER, R with the packages in environment.yml, Quarto
 ```
 
 ## Usage

@@ -6,7 +6,29 @@ import pandas as pd
 
 from centromere.cde import annotate_cde, read_reference
 from centromere.io import annotate_samples, load_config, load_data, save_tsv
-from centromere.preprocess import assign_loci, find_split_hits, merge_split_hits, remove_gaps
+from centromere.locate import apply_reconcile, locator_loci, reconcile, rescue_rows
+from centromere.preprocess import assign_loci, find_split_hits, merge_split_hits, primary_loci, remove_gaps
+
+
+def reconcile_locators(df, config, reference, output_dir):
+    """Locator spec phase 4: merge L1 (this table) with the L2/L3/L4 loci already on disk;
+    write loci_reconciled.tsv; with locate.rescue, rescued / insertion loci enter the table."""
+    loc = config["locate"]
+    loci, ran = locator_loci(config, df)
+    print(f"Reconciling locators {sorted(t.upper() for t in loci)}...")
+    rec = reconcile(loci, ran, {c: len(s) for c, s in reference.items()}, loc.get("insertion_bp", 30))
+    save_tsv(rec, output_dir / "loci_reconciled.tsv")
+    print("  " + ", ".join(f"{k} {v}" for k, v in rec["category"].value_counts().items()))
+    if not loc.get("rescue", True):
+        return df.assign(locator="L1").merge(rec[["sample", "centromere", "support"]],
+                                             on=["sample", "centromere"], how="left")
+    strains = df.dropna(subset=["strain"]).groupby("sample")["strain"].first().to_dict()
+    resc = rescue_rows(rec, config["cde"]["genome_dir"], reference, strains,
+                       config["cde"].get("flank", 150), config["cde"].get("search_radius", 20))
+    if len(resc):
+        print(f"  {len(resc)} loci from L2/L3/L4 enter the table: "
+              + ", ".join(f"{r.sample} {r.centromere} ({r.locator})" for r in resc.itertuples()))
+    return apply_reconcile(df, rec, resc)
 
 
 def main():
@@ -53,6 +75,15 @@ def main():
     else:
         df = ok_df
 
+    df, secondary = primary_loci(df)
+    qc["secondary_loci"] = secondary.groupby("sample").size()
+    qc["secondary_loci"] = qc["secondary_loci"].fillna(0).astype(int)
+    save_tsv(secondary, output_dir / "secondary_loci.tsv")
+    if len(secondary):
+        print(f"  {len(secondary)} extra loci of an already-found centromere set aside "
+              f"(secondary_loci.tsv): " + ", ".join(f"{r.sample} {r.centromere} {r.sseqid}"
+                                                    for r in secondary.head(10).itertuples()))
+
     genome_dir = config.get("cde", {}).get("genome_dir")
     if genome_dir:
         print(f"Annotating CDEI/CDEII/CDEIII from assemblies in {genome_dir}...")
@@ -63,6 +94,10 @@ def main():
             radius=config["cde"].get("search_radius", 20),
         )
         print(f"  {df['cde_ok'].sum()}/{len(df)} loci with confident CDEI and CDEIII")
+
+    loc = config.get("locate", {})
+    if genome_dir and loc.get("reconcile"):
+        df = reconcile_locators(df, config, reference, output_dir)
 
     qc["final_loci"] = df.groupby("sample").size()
     save_tsv(qc.reset_index(), output_dir / "preprocess_qc.tsv")

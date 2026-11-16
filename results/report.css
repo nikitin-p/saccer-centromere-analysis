@@ -1,0 +1,26 @@
+/* Horizontal scroll container for very wide figures (sequence logos). */
+.scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  border: 1px solid var(--bs-border-color, #dee2e6);
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+.scroll-x img {
+  max-width: none;
+  height: 260px;
+  width: auto;
+}
+
+.scroll-x figcaption {
+  white-space: normal;
+  max-width: 45rem;
+}
+
+/* Keep ordinary figures from overflowing. */
+figure img {
+  max-width: 100%;
+  height: auto;
+}

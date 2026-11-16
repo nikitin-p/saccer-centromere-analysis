@@ -1,11 +1,21 @@
 .DS_Store
 CLAUDE.md
 sacer_analysis.ipynb
-docs/
+# docs: only the specs are shared
+docs/*
+!docs/specs/
 Phenotypes_8391Traits/
 data/41586_2018_30_MOESM3_ESM.xls
 data/41586_2025_9637_MOESM3_ESM.xlsx
-results/
+# results: report sources are shared, rendered output is not
+results/*
+!results/report.qmd
+!results/report_helpers.R
+!results/report.css
 data/assemblies/
-data/scrap_assemblies.tsv
+data/assemblies_*/
 output/
+.venv/
+data/external/
+__pycache__/
+*.egg-info/

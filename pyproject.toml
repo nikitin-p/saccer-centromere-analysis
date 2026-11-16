@@ -17,6 +17,8 @@ dependencies = [
     "plotly>=5.15",
     "kaleido>=0.2",
     "logomaker>=0.8",
+    "statsmodels>=0.14",  # analysis G (conditional logit)
+    "xlrd>=2.0",          # Peter 2018 .xls
 ]
 
 [project.optional-dependencies]

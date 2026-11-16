@@ -34,6 +34,22 @@ def assign_loci(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["_lo", "_hi", "_locus"]).reset_index(drop=True)
 
 
+
+def primary_loci(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One locus per sample and centromere: the best BLAST e-value, then the longest.
+
+    A second locus of the same centromere elsewhere in a genome is, in practice, a short
+    partial hit in an AT-rich region that the CDE annotation extended past the length
+    filter (e.g. ScRAP ALH_1b: CEN6 on chrVI plus a 51-bp hit on chrXII, e = 7e-6). Returns
+    (primary, secondary); secondary loci are kept for inspection, not analysed.
+    """
+    order = df.assign(_len=df["sequence"].str.len()).sort_values(
+        ["sample", "centromere", "evalue", "_len"], ascending=[True, True, True, False])
+    first = ~order.duplicated(["sample", "centromere"])
+    keep = order.index[first.to_numpy()]
+    return df.loc[sorted(keep)].reset_index(drop=True), df.drop(index=keep).reset_index(drop=True)
+
+
 def find_split_hits(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     mask = (
         df.groupby(["sample", "centromere", "sseqid"])["sseqid"]

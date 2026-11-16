@@ -1,0 +1,43 @@
+# Analysis G (microevolution spec): Peter 2018 short-read assemblies, BLAST loci only
+# (assemblies are not local, so no CDE annotation). Run: scripts/peter748.py
+input:
+  path: "~/Desktop/yeast_centromeres/sacer_figures/1000_centromeres.tsv"
+  format: tsv
+  sample_map: null      # sample = <strain>_<n>; strain derived in scripts/peter748.py
+
+reference: "data/sacer_centromere.fasta"
+
+output:
+  dir: "output/peter748"
+
+preprocess:
+  merge_max_distance: 5000
+
+filter:
+  min_length: 80
+  min_gc: 0.05
+
+aneuploidy:
+  metadata: "data/41586_2018_30_MOESM3_ESM.xls"   # Peter 2018 Table S1 (Aneuploidies, Clades)
+  min_aneuploid: 10                               # test a chromosome only with >= 10 aneuploid strains
+  n_perm: 10000                                   # within-clade permutations
+
+phenotypes:   # CEN alleles vs Loegler 2025 traits; spec docs/specs/2026-11-16-cen-phenotypes.md
+  helsen_sd4: "data/external/helsen2026/SD4_scer_centromeres.xlsx"
+  plink: "data/external/peter2018/1011GWAS_matrix"           # .bed/.bim/.fam (chr 17 = CNVs)
+  metadata: "data/41586_2018_30_MOESM3_ESM.xls"
+  traits_dir: "Phenotypes_8391Traits"
+  gff: "data/external/sgd/saccharomyces_cerevisiae.gff.gz"
+  cen_bed: "data/s288c_cen.bed"
+  cis_window: 10000
+  rare_freq: 0.05
+  min_minor: 20
+  min_n: 200
+  stress_regex: "^(SCbenomyl|YPDBENOMYL|SC4NQO|SCHU|YPDHU|SCcamptothecin)"
+  kinetochore_genes: [CBF1, CEP3, CBF2, CTF13, SKP1, CSE4, SCM3, MIF2, OKP1, AME1, NDC80]   # CBF2 = NDC10 in SGD GFF
+  copper_regex: "(?i)cuso4"
+  cup1_marker: "YHR055C"
+  n_cis_cnv: 5          # most variable ORF CNV markers tested against their own expression
+  local_window: 50000   # SNPs within +-50 kb of the CEN -> PCs for the conditional refit
+  local_pcs: 5
+  n_conditional: 30     # top tests per family set refitted with local PCs
