@@ -4,6 +4,11 @@ import tempfile
 import pandas as pd
 
 
+def _png_or_html(path):
+    """plotly figures fall back to HTML when kaleido has no usable Chrome (viz._write_image)."""
+    return os.path.exists(path) or os.path.exists(os.path.splitext(path)[0] + ".html")
+
+
 def test_plot_length_violin():
     from centromere.viz import plot_length_violin
 
@@ -15,7 +20,7 @@ def test_plot_length_violin():
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = os.path.join(tmpdir, "length_violin.png")
         plot_length_violin(df, output_path)
-        assert os.path.exists(output_path)
+        assert _png_or_html(output_path)
 
 
 def test_plot_gc_violin():
@@ -29,7 +34,7 @@ def test_plot_gc_violin():
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = os.path.join(tmpdir, "gc_violin.png")
         plot_gc_violin(df, output_path)
-        assert os.path.exists(output_path)
+        assert _png_or_html(output_path)
 
 
 def test_plot_sequence_logos():

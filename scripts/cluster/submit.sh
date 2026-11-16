@@ -3,6 +3,7 @@
 #
 #   bash scripts/cluster/submit.sh check            node resources, conda env, reachable download hosts
 #   bash scripts/cluster/submit.sh env              create/update the conda env (environment.yml) + tests
+#   bash scripts/cluster/submit.sh test             only the unit tests, in the existing env
 #   bash scripts/cluster/submit.sh download [SET...] download_data.py, one job per set
 #                                                   (default: reference scrap142 loegler1086)
 #   bash scripts/cluster/submit.sh run [SET...] [--redo STEP,...] [--steps STEP,...]
@@ -61,7 +62,7 @@ yaml_key() { awk -v s="$2:" -v k="$3:" '$1 == s && !/^ /{o=1; next} o && /^[^ #]
     o && $1 == k {gsub(/["'\'']/, "", $2); print $2; exit}' "$1"; }
 out_of() { yaml_key "$1" output dir; }
 
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 in_list() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
 
 # ---------------------------------------------------------------- sbatch wrapper
@@ -170,6 +171,9 @@ env)
     j=$(sb "$REPO/output/logs/slurm" c-env -c 4 --mem=16G -t 06:00:00 \
         --export=ALL,NO_CONDA=1 -- bash "$here/setup_env.sh")
     echo "c-env: $j   log: output/logs/slurm/c-env-$j.out" ;;
+test)
+    j=$(sb "$REPO/output/logs/slurm" c-test -c 2 --mem=8G -t 01:00:00 -- python -m pytest -q -rfE)
+    echo "c-test: $j   log: output/logs/slurm/c-test-$j.out" ;;
 download)
     sets=${*:-reference $DATASETS}
     # needs pandas from the env: wait for a queued/running `submit.sh env` job, if any

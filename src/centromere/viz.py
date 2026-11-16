@@ -11,30 +11,51 @@ import seaborn as sns
 _KALEIDO_RETRIES = 5
 
 
+# Child process for the kaleido export: reads the figure JSON on stdin, writes argv[1].
+# kaleido 1.5.1 opens a fresh Chrome tab per call and sometimes evaluates its render script
+# in the stale about:blank context ("kaleido_scopes is not defined"); most one-shot calls
+# fail on Chrome 150. A persistent server navigates once, so only its start can hit the race.
+_KALEIDO_CHILD = f"""
+import sys, kaleido, plotly.io as pio
+fig = pio.from_json(sys.stdin.read())
+for attempt in range({_KALEIDO_RETRIES}):
+    try:
+        kaleido.start_sync_server(silence_warnings=True)
+        fig.write_image(sys.argv[1])
+        break
+    except Exception as err:
+        kaleido.stop_sync_server(silence_warnings=True)
+        if attempt == {_KALEIDO_RETRIES - 1}:
+            sys.exit(f"{{type(err).__name__}}: {{err}}")
+"""
+
+
 def _write_image(fig, path: str | Path) -> None:
-    """`fig.write_image` through one persistent kaleido browser, restarted on failure.
+    """`fig.write_image` via kaleido in a child process, killed after KALEIDO_TIMEOUT s (120).
 
-    kaleido 1.5.1 opens a fresh Chrome tab per call and sometimes evaluates its render script
-    in the stale about:blank context ("kaleido_scopes is not defined"); most one-shot calls
-    fail on Chrome 150. A persistent server navigates once, so only its start can hit the race.
-    If every attempt fails (no Chrome), the figure is written as HTML next to `path`.
+    On a cluster node without a working Chrome kaleido can hang instead of failing, so the
+    export runs in a subprocess with a timeout. If it fails or times out (or KALEIDO_TIMEOUT=0),
+    the figure is written as HTML next to `path`.
     """
-    import kaleido
+    import subprocess
 
-    for attempt in range(_KALEIDO_RETRIES):
+    timeout = float(os.environ.get("KALEIDO_TIMEOUT", "120"))
+    err = "disabled (KALEIDO_TIMEOUT=0)"
+    if timeout > 0:
         try:
-            kaleido.start_sync_server(silence_warnings=True)
-            fig.write_image(str(path))
-            return
-        except Exception as err:
-            kaleido.stop_sync_server(silence_warnings=True)
-            if attempt == _KALEIDO_RETRIES - 1:
-                # No usable Chrome (typical on a cluster node): keep the figure as HTML instead
-                html = Path(path).with_suffix(".html")
-                fig.write_html(str(html), include_plotlyjs="cdn")
-                print(f"WARNING: plotly image export failed ({type(err).__name__}: {err}); "
-                      f"wrote {html} instead. `plotly_get_chrome` installs a Chrome for kaleido.",
-                      file=sys.stderr)
+            res = subprocess.run([sys.executable, "-c", _KALEIDO_CHILD, str(path)],
+                                 input=fig.to_json(), text=True, capture_output=True,
+                                 timeout=timeout)
+            if res.returncode == 0 and Path(path).exists():
+                return
+            err = (res.stderr.strip().splitlines() or [f"exit code {res.returncode}"])[-1]
+        except subprocess.TimeoutExpired:
+            err = f"no result in {timeout:g} s"
+    # No usable Chrome (typical on a cluster node): keep the figure as HTML instead
+    html = Path(path).with_suffix(".html")
+    fig.write_html(str(html), include_plotlyjs="cdn")
+    print(f"WARNING: plotly image export failed ({err}); wrote {html} instead. "
+          "`plotly_get_chrome` installs a Chrome for kaleido.", file=sys.stderr)
 
 
 def plot_length_violin(

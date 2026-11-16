@@ -19,4 +19,4 @@ set +u; conda activate "$CONDA_ENV"; set -u
 pip install -e . --no-deps
 for t in blastn mafft minimap2 nhmmer Rscript quarto; do printf '%-10s %s\n' "$t" "$(command -v "$t" || echo MISSING)"; done
 Rscript -e 'cat("DNAshapeR:", requireNamespace("DNAshapeR", quietly = TRUE), "\n")'
-python -m pytest -q
+python -m pytest -q -rfE
