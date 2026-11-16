@@ -160,20 +160,27 @@ cmd=${1:-}; [ $# -gt 0 ] && shift
 case $cmd in
 check)
     for node in $NODES; do
-        j=$(sb "$REPO/output/logs/slurm" "c-check-$node" -w "$node" -c 1 --mem=1G -t 00:15:00 -- \
-            env NO_CONDA=1 bash "$here/check.sh")
+        # NO_CONDA via --export: job.sh must not activate an env that may not exist yet
+        j=$(sb "$REPO/output/logs/slurm" "c-check-$node" -w "$node" -c 1 --mem=1G -t 00:15:00 \
+            --export=ALL,NO_CONDA=1 -- bash "$here/check.sh")
         echo "c-check-$node: $j"
     done
     echo "result: output/logs/slurm/c-check-<node>-<id>.out" ;;
 env)
-    j=$(sb "$REPO/output/logs/slurm" c-env -c 4 --mem=16G -t 06:00:00 -- \
-        env NO_CONDA=1 bash "$here/setup_env.sh")
+    j=$(sb "$REPO/output/logs/slurm" c-env -c 4 --mem=16G -t 06:00:00 \
+        --export=ALL,NO_CONDA=1 -- bash "$here/setup_env.sh")
     echo "c-env: $j   log: output/logs/slurm/c-env-$j.out" ;;
 download)
     sets=${*:-reference $DATASETS}
+    # needs pandas from the env: wait for a queued/running `submit.sh env` job, if any
+    envdep=()
+    if [ -z "${DRY:-}" ]; then
+        envjob=$(squeue -h -u "$USER" -n c-env -o %i | head -1)
+        [ -n "$envjob" ] && { envdep=(--dependency="afterok:$envjob" --kill-on-invalid-dep=yes); echo "after c-env: $envjob"; }
+    fi
     for s in $sets; do
-        j=$(sb "$REPO/output/logs/slurm" "c-dl-$s" -c 1 --mem=4G -t 24:00:00 -- \
-            python scripts/download_data.py --set "$s")
+        j=$(sb "$REPO/output/logs/slurm" "c-dl-$s" -c 1 --mem=4G -t 24:00:00 \
+            ${envdep[@]+"${envdep[@]}"} -- python scripts/download_data.py --set "$s")
         echo "c-dl-$s: $j"
     done
     echo "logs: output/logs/slurm/c-dl-<set>-<id>.out" ;;
