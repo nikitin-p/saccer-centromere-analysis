@@ -182,10 +182,19 @@ download)
         envjob=$(squeue -h -u "$USER" -n c-env -o %i | head -1)
         [ -n "$envjob" ] && { envdep=(--dependency="afterok:$envjob" --kill-on-invalid-dep=yes); echo "after c-env: $envjob"; }
     fi
-    for s in $sets; do
+    # the genome sets need reference's sample tables (Loegler Table S2): they wait for it
+    refdep=""
+    for s in reference $sets; do
+        [ "$s" = reference ] && ! in_list reference "$sets" && continue
+        [ "$s" = reference ] && [ -n "$refdep" ] && continue
+        dep=()
+        if [ "$s" = reference ]; then dep=(${envdep[@]+"${envdep[@]}"})
+        elif [ -n "$refdep" ]; then dep=(--dependency="afterok:$refdep" --kill-on-invalid-dep=yes)
+        else dep=(${envdep[@]+"${envdep[@]}"}); fi
         j=$(sb "$REPO/output/logs/slurm" "c-dl-$s" -c 1 --mem=4G -t 24:00:00 \
-            ${envdep[@]+"${envdep[@]}"} -- python scripts/download_data.py --set "$s")
+            ${dep[@]+"${dep[@]}"} -- python scripts/download_data.py --set "$s")
         echo "c-dl-$s: $j"
+        [ "$s" = reference ] && refdep=$j
     done
     echo "logs: output/logs/slurm/c-dl-<set>-<id>.out" ;;
 run)
