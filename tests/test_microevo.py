@@ -142,3 +142,22 @@ def test_region_map_and_windows():
     assert d.loc["CDEII", "pi_sub"] == pytest.approx(1 / 4)
     assert d.loc["left_1", "offset"] == -1 and d.loc["right_2", "offset"] == 2
     assert list(d.index[:2]) == ["left_2", "left_1"]
+
+
+def test_leave_one_out_pi_matches_brute_force():
+    from centromere.microevo import leave_one_out_pi
+    rng = np.random.default_rng(0)
+    base = rng.choice(list("ACGT"), 60)
+    seqs = []
+    for _ in range(9):
+        s = base.copy()
+        s[rng.integers(0, 60, 6)] = rng.choice(list("ACGT-"), 6)
+        seqs.append("".join(s))
+    seqs[3] = "-" * 20 + seqs[3][20:]                # terminal gap: fewer comparable sites
+    groups = np.array(["flank"] * 15 + ["CEN"] * 30 + ["flank"] * 15)
+    full, wo = leave_one_out_pi(seqs, groups, "CEN")
+    ref = pairwise_pi(seqs, groups).set_index("group").loc["CEN", "pi"]
+    assert np.isclose(full, ref)
+    for k in range(len(seqs)):
+        rest = seqs[:k] + seqs[k + 1:]
+        assert np.isclose(wo[k], pairwise_pi(rest, groups).set_index("group").loc["CEN", "pi"])

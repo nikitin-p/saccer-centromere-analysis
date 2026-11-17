@@ -22,7 +22,7 @@ from scipy.stats import wilcoxon
 from centromere.align import run_mafft
 from centromere.io import load_config, save_tsv
 from centromere.locate import assemblies, lift_interval, lift_window, parse_paf, read_fasta, s288c_cens
-from centromere.microevo import diversity_windows, pairwise_pi, region_map, revcomp
+from centromere.microevo import diversity_windows, leave_one_out_pi, pairwise_pi, region_map, revcomp
 
 ELEMENTS = ["CDEI", "CDEII", "CDEIII"]
 
@@ -134,9 +134,9 @@ def crosscheck(div_alns, cens, aligned):
     """CEN pi from the window MSA vs the CEN-only MSA in aligned.tsv, same sequences. Where they
     differ by > 10 %, `explained_by` = the strain whose removal brings both within 10 %
     (the two MSAs place that strain's indels differently)."""
-    def both(aln, a, cols, drop=None):
-        w = [s for k, s in aln.items() if k != drop]
-        m = [a["ref_aligned_seq"].iloc[0]] + [s for k, s in zip(a["strain"], a["aligned_seq"]) if k != drop]
+    def both(aln, a, cols):
+        w = list(aln.values())
+        m = [a["ref_aligned_seq"].iloc[0]] + list(a["aligned_seq"])
         pw = pairwise_pi(w, np.where(cols, "CEN", "flank")).set_index("group").loc["CEN"]
         pa = pairwise_pi(m, np.array(["CEN"] * len(m[0]))).iloc[0]
         return pw, pa
@@ -152,8 +152,12 @@ def crosscheck(div_alns, cens, aligned):
         rel = (w["pi"] - m["pi"]) / m["pi"]
         expl, rel_wo = "", np.nan
         if abs(rel) > 0.10:
-            alt = {k: both(aln, a, cols, k) for k in a["strain"]}
-            alt = {k: (x["pi"] - y["pi"]) / y["pi"] for k, (x, y) in alt.items()}
+            # pi without each strain, from one pass over the pairs per MSA (was 2n full passes)
+            _, w_wo = leave_one_out_pi(list(aln.values()), np.where(cols, "CEN", "flank"), "CEN")
+            _, m_wo = leave_one_out_pi([a["ref_aligned_seq"].iloc[0]] + list(a["aligned_seq"]),
+                                       np.array(["CEN"] * len(a["ref_aligned_seq"].iloc[0])), "CEN")
+            widx = {k: n for n, k in enumerate(aln)}
+            alt = {k: (w_wo[widx[k]] - m_wo[1 + n]) / m_wo[1 + n] for n, k in enumerate(a["strain"])}
             k = min(alt, key=lambda k: abs(alt[k]))
             if abs(alt[k]) <= 0.10:
                 expl, rel_wo = k, alt[k]

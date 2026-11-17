@@ -322,6 +322,23 @@ def pairwise_pi(seqs: list[str], groups: np.ndarray, n_sites: dict | None = None
     (n_sites default: the group's column count); a group with fewer than min_pair_frac of all
     pairs usable is NA.
     """
+    labels, n_sites, use, pi_sub, indel = pair_rates(seqs, groups, n_sites, min_site_frac)
+    n = len(seqs)
+    n_pairs_total = n * (n - 1) // 2
+    with np.errstate(invalid="ignore", divide="ignore"):
+        n_use = use.sum(axis=0)
+        ok = n_use >= min_pair_frac * n_pairs_total
+        mean = lambda m: np.where(ok, np.nansum(m, axis=0) / np.maximum(n_use, 1), np.nan)
+        return pd.DataFrame({"group": labels, "n_sites": [n_sites[g] for g in labels],
+                             "n_pairs": n_use, "pi": mean(pi_sub + indel),
+                             "pi_sub": mean(pi_sub), "indel_rate": mean(indel)})
+
+
+def pair_rates(seqs: list[str], groups: np.ndarray, n_sites: dict | None = None,
+               min_site_frac: float = 0.5):
+    """Per pair (i < j, row order of `pair_index`) x group: usable mask, pi_sub, indel rate
+    (NaN where unusable). Definitions as in `pairwise_pi`. Returns labels, n_sites, use,
+    pi_sub, indel."""
     x = _encode(seqs)
     groups = np.asarray(groups)
     labels = pd.unique(groups)
@@ -354,16 +371,35 @@ def pairwise_pi(seqs: list[str], groups: np.ndarray, n_sites: dict | None = None
     else:
         comp, sub, ind = (np.concatenate(acc[k]).astype(np.float64) for k in ("comp", "sub", "ind"))
     use = (comp >= need) & (comp > 0)
-    n_pairs_total = n * (n - 1) // 2
     with np.errstate(invalid="ignore", divide="ignore"):
         rate = lambda m: np.where(use, m / np.where(comp > 0, comp, 1), np.nan)
-        pi_sub, indel = rate(sub), rate(ind)
-        n_use = use.sum(axis=0)
-        ok = n_use >= min_pair_frac * n_pairs_total
-        mean = lambda m: np.where(ok, np.nansum(m, axis=0) / np.maximum(n_use, 1), np.nan)
-        return pd.DataFrame({"group": labels, "n_sites": [n_sites[g] for g in labels],
-                             "n_pairs": n_use, "pi": mean(pi_sub + indel),
-                             "pi_sub": mean(pi_sub), "indel_rate": mean(indel)})
+        return labels, n_sites, use, rate(sub), rate(ind)
+
+
+def pair_index(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """(i, j) of each pair in `pair_rates` row order."""
+    i = np.repeat(np.arange(n - 1), np.arange(n - 1, 0, -1))
+    j = np.concatenate([np.arange(k + 1, n) for k in range(n - 1)]) if n > 1 else np.array([], int)
+    return i, j
+
+
+def leave_one_out_pi(seqs: list[str], groups: np.ndarray, group, min_site_frac: float = 0.5,
+                     min_pair_frac: float = 0.5) -> tuple[float, np.ndarray]:
+    """pi of `group` (as `pairwise_pi`) for all sequences, and for each k without sequence k;
+    one pass over the pairs instead of n + 1."""
+    labels, _, use, pi_sub, indel = pair_rates(seqs, groups, min_site_frac=min_site_frac)
+    g = list(labels).index(group)
+    u, v = use[:, g], np.where(use[:, g], pi_sub[:, g] + indel[:, g], 0.0)
+    n = len(seqs)
+    i, j = pair_index(n)
+    nu = np.bincount(i, u, n) + np.bincount(j, u, n)      # usable pairs touching k
+    sv = np.bincount(i, v, n) + np.bincount(j, v, n)
+    full_ok = u.sum() >= min_pair_frac * n * (n - 1) / 2
+    full = v.sum() / max(u.sum(), 1) if full_ok else np.nan
+    n_wo = u.sum() - nu
+    ok = n_wo >= min_pair_frac * (n - 1) * (n - 2) / 2
+    wo = np.where(ok, (v.sum() - sv) / np.maximum(n_wo, 1), np.nan)
+    return full, wo
 
 
 def diversity_windows(aln: dict[str, str], s288c: str, cen_start: int, cen_len: int,
