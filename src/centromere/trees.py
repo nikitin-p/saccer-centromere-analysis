@@ -24,6 +24,8 @@ def concat_cen(aligned: pd.DataFrame, order: list[str]) -> tuple[dict[str, str],
     """Concatenate the per-CEN MSAs (S288C = ref_aligned_seq). A strain without a locus gets
     gaps for that CEN. Returns {taxon: seq} and the block table (centromere, start, end)."""
     strains = sorted(aligned["strain"].unique())
+    if "S288C" in strains:
+        raise ValueError("strain S288C collides with the reference taxon; rename it in the sample map")
     seqs = {t: [] for t in ["S288C"] + strains}
     blocks, pos = [], 0
     for cen in order:

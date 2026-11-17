@@ -52,3 +52,15 @@ def test_annotate_keeps_cdeii_insertion_on_minus_strand(tmp_path):
     assert result["strand"] == "-"
     assert result["contig_name"] == "chrXVI"
     assert (result["cen_start"], result["cen_end"]) == (hit_lo, hit_hi)
+
+
+def test_annotate_locus_at_contig_end_does_not_crash():
+    """A CEN projected past a contig end leaves no room for CDEIII after CDEI."""
+    from centromere.cde import CDEModel, read_reference
+    model = CDEModel(read_reference("data/sacer_centromere.fasta"))
+    ref = model.reference["CEN1"]
+    short = ref[:40]                      # CDEI present, contig ends inside CDEII
+    cde = model.annotate(short, 0, len(ref), radius=20)
+    assert cde["cde_ok"] is False
+    tiny = model.annotate("ACGT" * 5, 0, 120)
+    assert tiny["cde_ok"] is False and tiny["cdeii_seq"] == "ACGT" * 5

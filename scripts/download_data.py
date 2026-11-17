@@ -109,6 +109,9 @@ def read_loegler_table(path: Path) -> pd.DataFrame:
 # ScRAP names whose `_1b`/`_3`-style suffix is needed to keep strains unique (checked on the
 # 142-strain member list, 2026-11-16)
 SCRAP_KEEP_SUFFIX = {"ALH", "CGH"}
+# Taxon names the analyses reserve for the R64 reference control (07, 10, 11, 13, ...).
+# ScRAP-142 has its own S288C assembly; it gets a distinct strain key (accession unchanged).
+RESERVED_STRAINS = {"S288C": "S288C_asm"}
 
 
 def strain_names(targets: dict[str, dict], dataset: str) -> dict[str, str]:
@@ -118,7 +121,8 @@ def strain_names(targets: dict[str, dict], dataset: str) -> dict[str, str]:
     def short(n):
         b = re.sub(r"_\d+[a-z]*$", "", n)
         return b if dataset == "scrap142" and b not in SCRAP_KEEP_SUFFIX else n
-    return {t["sample"]: (short(t["name"]) if t["primary"] else t["sample"]) for t in targets.values()}
+    out = {t["sample"]: (short(t["name"]) if t["primary"] else t["sample"]) for t in targets.values()}
+    return {k: RESERVED_STRAINS.get(v, v) for k, v in out.items()}
 
 
 def apply_filter(targets: dict[str, dict], strains: list[str] | None) -> dict[str, dict]:

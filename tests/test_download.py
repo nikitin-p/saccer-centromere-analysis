@@ -49,6 +49,11 @@ def test_strain_names():
     assert len(set(s.values())) == len(s)
 
 
+def test_strain_names_avoid_reference_name():
+    t = dd.scrap_targets(["x/S288C.asm01.HP0.nuclear_genome.tidy.fa.gz"])
+    assert dd.strain_names(t, "scrap142") == {"S288C": "S288C_asm"}   # "S288C" = R64 control
+
+
 def loegler_table():
     return pd.DataFrame({"Standardized_name": ["AAB", "AAL", "AAL", "AGA", "AGA_1a"],
                          "Haplotype": [None, "HP1", "HP2", None, None],

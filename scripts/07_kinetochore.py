@@ -24,6 +24,9 @@ def genomes(config: dict) -> list[tuple[str, Path]]:
     samples = pd.read_csv(config["input"]["sample_map"], sep="\t")
     gdir = Path(config["cde"]["genome_dir"])
     out = [(r["strain"], gdir / f"{r['accession']}.fasta.gz") for _, r in samples.iterrows()]
+    if "S288C" in samples["strain"].values:
+        raise SystemExit("a strain is named S288C, which is reserved for the R64 control: "
+                         "regenerate the sample table (download_data.py renames it S288C_asm)")
     return out + [("S288C", Path(kin["s288c_genome"]).expanduser())]
 
 

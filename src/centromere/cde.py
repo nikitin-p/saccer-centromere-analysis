@@ -61,14 +61,21 @@ class CDEModel:
     def annotate(self, window: str, start_guess: int, end_guess: int, radius: int = 20) -> dict:
         """Place CDEI near start_guess and CDEIII ending near end_guess (window coords)."""
         s1 = score_positions(window, self.cdei)
-        lo1, hi1 = max(0, start_guess - radius), min(len(s1), start_guess + radius + 1)
+        s3 = score_positions(window, self.cdeiii)
+        # A locus cut short by a contig end (or a projection beyond it) can leave no room for
+        # CDEI + CDEIII: return the window as an unconfident call instead of crashing.
+        if len(s3) == 0 or len(window) < CDEI_LEN + CDEIII_LEN:
+            return self._failed(window)
+        lo1 = min(max(0, start_guess - radius), len(s1) - 1)
+        hi1 = max(lo1 + 1, min(len(s1), start_guess + radius + 1))
         i1 = lo1 + int(np.argmax(s1[lo1:hi1]))
 
-        s3 = score_positions(window, self.cdeiii)
         lo3 = max(i1 + CDEI_LEN, end_guess - CDEIII_LEN - radius)
         hi3 = min(len(s3), end_guess - CDEIII_LEN + radius + 1)
         if hi3 <= lo3:  # projected end clashes with CDEI: search everything after it
             hi3 = len(s3)
+        if lo3 >= hi3:  # nothing after CDEI fits a CDEIII
+            return self._failed(window)
         i3 = lo3 + int(np.argmax(s3[lo3:hi3]))
 
         return {
@@ -81,6 +88,13 @@ class CDEModel:
             "cdeiii_seq": window[i3:i3 + CDEIII_LEN],
             "cde_ok": bool(s1[i1] >= self.cdei_min and s3[i3] >= self.cdeiii_min),
         }
+
+    @staticmethod
+    def _failed(window: str) -> dict:
+        """No room for CDEI + CDEIII: the whole window as CDEII, NaN scores, cde_ok False."""
+        return {"cdei_start": 0, "cdeiii_end": len(window), "cdei_score": float("nan"),
+                "cdeiii_score": float("nan"), "cdei_seq": "", "cdeii_seq": window,
+                "cdeiii_seq": "", "cde_ok": False}
 
 
 def _open_genome(genome_dir: Path, sample: str) -> dict:
