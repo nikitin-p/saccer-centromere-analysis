@@ -384,10 +384,10 @@ def pair_index(n: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def leave_one_out_pi(seqs: list[str], groups: np.ndarray, group, min_site_frac: float = 0.5,
-                     min_pair_frac: float = 0.5) -> tuple[float, np.ndarray]:
+                     min_pair_frac: float = 0.5, n_sites: dict | None = None) -> tuple[float, np.ndarray]:
     """pi of `group` (as `pairwise_pi`) for all sequences, and for each k without sequence k;
     one pass over the pairs instead of n + 1."""
-    labels, _, use, pi_sub, indel = pair_rates(seqs, groups, min_site_frac=min_site_frac)
+    labels, _, use, pi_sub, indel = pair_rates(seqs, groups, n_sites, min_site_frac=min_site_frac)
     g = list(labels).index(group)
     u, v = use[:, g], np.where(use[:, g], pi_sub[:, g] + indel[:, g], 0.0)
     n = len(seqs)

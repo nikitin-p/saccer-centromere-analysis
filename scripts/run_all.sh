@@ -17,6 +17,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 export PYTHONPATH="$REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUNBUFFERED=1   # step logs show progress while a step runs (was empty for 18 h)
 PY="${PYTHON:-python}"
 THREADS="${THREADS:-4}"
 

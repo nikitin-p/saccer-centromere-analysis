@@ -25,6 +25,7 @@ from centromere.locate import assemblies, lift_interval, lift_window, parse_paf,
 from centromere.microevo import diversity_windows, leave_one_out_pi, pairwise_pi, region_map, revcomp
 
 ELEMENTS = ["CDEI", "CDEII", "CDEIII"]
+CROSSCHECK_MARGIN = 500   # left-flank columns kept for the crosscheck (see cen_columns)
 
 
 def l3_loci(asm, cens, blocks, l1, bridge):
@@ -130,15 +131,28 @@ def summarise(div):
     return pd.concat([per, pd.DataFrame(pooled)], ignore_index=True)
 
 
+def cen_columns(aln, cols, margin=CROSSCHECK_MARGIN):
+    """Window MSA cut to the CEN columns plus `margin` columns on the left, with their group
+    labels. The CEN group's pi depends on flank columns only through the indel state at the
+    last comparable column before the CEN (right-flank columns never matter), so the cut is
+    exact for every pair with a comparable column within `margin`; for the rest a gap run
+    entering the CEN counts as opening there, as it does in the CEN-only MSA. Avoids the full
+    pass over 4-45 kb wide windows (1086 strains: hours per CEN on the cluster)."""
+    idx = np.flatnonzero(cols)
+    lo, hi = max(idx[0] - margin, 0), idx[-1] + 1
+    return [s[lo:hi] for s in aln.values()], np.where(cols[lo:hi], "CEN", "flank")
+
+
 def crosscheck(div_alns, cens, aligned):
     """CEN pi from the window MSA vs the CEN-only MSA in aligned.tsv, same sequences. Where they
     differ by > 10 %, `explained_by` = the strain whose removal brings both within 10 %
     (the two MSAs place that strain's indels differently)."""
-    def both(aln, a, cols):
-        w = list(aln.values())
+    def both(w, groups, a, n_cen):
+        # site threshold from the S288C CEN length (as diversity_windows), not the column
+        # count: one strain's insertion (CEN5: 244 bp) widens the MSA and would make every pair NA
         m = [a["ref_aligned_seq"].iloc[0]] + list(a["aligned_seq"])
-        pw = pairwise_pi(w, np.where(cols, "CEN", "flank")).set_index("group").loc["CEN"]
-        pa = pairwise_pi(m, np.array(["CEN"] * len(m[0]))).iloc[0]
+        pw = pairwise_pi(w, groups, n_sites={"CEN": n_cen, "flank": 1}).set_index("group").loc["CEN"]
+        pa = pairwise_pi(m, np.array(["CEN"] * len(m[0])), n_sites={"CEN": n_cen}).iloc[0]
         return pw, pa
 
     rows = []
@@ -147,15 +161,18 @@ def crosscheck(div_alns, cens, aligned):
         aln = div_alns[cen]
         rm = region_map(aln["S288C"], aln["S288C"].replace("-", "").find(c["cen_seq"]), len(c["cen_seq"]))
         cols = rm["region"].isin(ELEMENTS).to_numpy()
+        wseqs, groups = cen_columns(aln, cols)
         a = aligned[(aligned["centromere"] == cen) & aligned["strain"].isin(aln)]
-        w, m = both(aln, a, cols)
+        n_cen = len(c["cen_seq"])
+        w, m = both(wseqs, groups, a, n_cen)
         rel = (w["pi"] - m["pi"]) / m["pi"]
         expl, rel_wo = "", np.nan
         if abs(rel) > 0.10:
             # pi without each strain, from one pass over the pairs per MSA (was 2n full passes)
-            _, w_wo = leave_one_out_pi(list(aln.values()), np.where(cols, "CEN", "flank"), "CEN")
+            _, w_wo = leave_one_out_pi(wseqs, groups, "CEN", n_sites={"CEN": n_cen, "flank": 1})
             _, m_wo = leave_one_out_pi([a["ref_aligned_seq"].iloc[0]] + list(a["aligned_seq"]),
-                                       np.array(["CEN"] * len(a["ref_aligned_seq"].iloc[0])), "CEN")
+                                       np.array(["CEN"] * len(a["ref_aligned_seq"].iloc[0])), "CEN",
+                                       n_sites={"CEN": n_cen})
             widx = {k: n for n, k in enumerate(aln)}
             alt = {k: (w_wo[widx[k]] - m_wo[1 + n]) / m_wo[1 + n] for n, k in enumerate(a["strain"])}
             k = min(alt, key=lambda k: abs(alt[k]))
