@@ -91,7 +91,10 @@ run_step() {
             local rdir="$OUT/report"
             mkdir -p "$rdir"
             cp results/report.qmd results/report_helpers.R results/report.css "$rdir/"
+            rm -f "$rdir/report.html"
             (cd "$rdir" && quarto render report.qmd -P "data_dir:$REPO/$OUT" -P "repo:$REPO")
+            # quarto exits 0 after an R error ("WARN: Error encountered when rendering files")
+            [ -s "$rdir/report.html" ] || { echo "report.html not written: R error above" >&2; exit 1; }
             echo "report: $rdir/report.html" ;;
         validate)            "$PY" scripts/validate_external.py --config "$CONFIG" ;;
         peter748)            "$PY" scripts/peter748.py --config config.peter748.yaml ;;

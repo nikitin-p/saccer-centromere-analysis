@@ -58,6 +58,11 @@ n_indel <- sum(events$type != "Substitution")
 
 # Shown on hover and in the figure files; a light/dark switch is not offered
 assembly_rows <- length(levels(aligned$assembly))
+# One row per assembly stops being readable (and exceeds the cairo surface limit of 32767 px)
+# beyond a few dozen assemblies: large sets get a fixed-height static heatmap / per-column
+# variant frequencies instead (LARGE_SET is also used in the chunk options below)
+LARGE_SET <- 60
+large_set <- assembly_rows > LARGE_SET
 ```
 
 ## From genomes to centromeres at a glance {#sec-workflow}
@@ -1559,7 +1564,7 @@ pipeline now removes or repairs.
 ```{r fig-length}
 #| column: page
 #| fig-width: 12
-#| fig-height: !expr 1.6 + 0.42 * length(unique(d$aligned$assembly))
+#| fig-height: !expr if (length(unique(d$aligned$assembly)) > LARGE_SET) 12 else 1.6 + 0.42 * length(unique(d$aligned$assembly))
 #| fig-cap: "Centromere length (CDEI start to CDEIII end) in every assembly. Colour is the difference from the S288C element of the same centromere; numbers are the length in bp. Hover for details."
 len_df <- aligned |>
   mutate(text = paste0("<b>", assembly, "</b> · ", clade,
@@ -1581,8 +1586,25 @@ if (assembly_rows <= 30) {
                                  colour = abs(delta_length) >= 0.7 * lim), size = 3) +
     scale_colour_manual(values = c(`FALSE` = INK, `TRUE` = "white"), guide = "none")
 }
-save_fig(p_len, "fig03_length_vs_s288c", 11, 1.2 + 0.32 * assembly_rows)
-as_plotly(p_len, 150 + 42 * assembly_rows)
+if (large_set) {
+  # raster without cell borders or numbers; one pixel row per assembly
+  p_len <- ggplot(len_df, aes(centromere, assembly, fill = delta_length)) +
+    geom_raster() +
+    scale_fill_gradient2(low = DIV_LOW, mid = DIV_MID, high = DIV_HIGH, midpoint = 0,
+                         limits = c(-lim, lim), oob = squish,
+                         name = "Δ length vs S288C, bp") +
+    guides(fill = guide_colourbar(title.position = "top")) +
+    labs(x = NULL, y = paste(assembly_rows, "assemblies")) +
+    theme_cen() +
+    theme(panel.grid.major = element_blank(), axis.line.x = element_blank(),
+          axis.text.y = element_blank(),
+          legend.key.width = unit(1.6, "cm"), legend.key.height = unit(0.3, "cm"))
+  save_fig(p_len, "fig03_length_vs_s288c", 11, 12)
+  p_len
+} else {
+  save_fig(p_len, "fig03_length_vs_s288c", 11, 1.2 + 0.32 * assembly_rows)
+  as_plotly(p_len, 150 + 42 * assembly_rows)
+}
 ```
 
 **How it was obtained.** Length is counted on the annotated locus (first base of
@@ -1711,8 +1733,26 @@ comparable between centromeres.
 ```{r fig-variants}
 #| column: page
 #| fig-width: 12
-#| fig-height: !expr 1.5 + 8 * (0.45 + 0.24 * length(unique(d$aligned$assembly)))
+#| fig-height: !expr if (length(unique(d$aligned$assembly)) > LARGE_SET) 16 else 1.5 + 8 * (0.45 + 0.24 * length(unique(d$aligned$assembly)))
 #| fig-cap: "Every difference from S288C. One row per assembly, one panel per centromere; shaded bands are CDEI and CDEIII. Hover for the position and the bases."
+if (large_set) {
+  # fraction of the centromere's assemblies with a variant of each type in each column
+  n_cen <- aligned |> count(centromere, name = "n_cen")
+  freq <- variants |> distinct(centromere, col, type, assembly) |>
+    count(centromere, col, type) |> left_join(n_cen, by = "centromere") |>
+    mutate(frac = n / n_cen)
+  p_var <- ggplot() +
+    geom_rect(data = boxes, aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 1), fill = BAND) +
+    geom_col(data = freq, aes(col, frac, fill = type), width = 0.9) +
+    scale_fill_manual(values = VARIANT_COLOURS, name = NULL, drop = FALSE) +
+    scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+    facet_wrap(~centromere, ncol = 2, scales = "free_x") +
+    labs(x = "Alignment column", y = paste("Share of", assembly_rows, "assemblies")) +
+    theme_cen(10) +
+    theme(panel.grid.major.x = element_blank())
+  save_fig(p_var, "fig06_variant_map", 13, 16)
+  p_var
+} else {
 aln_len <- aligned |> distinct(centromere, ref_aligned_seq) |>
   transmute(centromere, len = nchar(ref_aligned_seq))
 var_df <- variants |>
@@ -1735,6 +1775,7 @@ p_var <- ggplot() +
   theme(panel.grid.major = element_blank(), axis.text.y = element_text(size = 7))
 save_fig(p_var, "fig06_variant_map", 13, 2 + 8 * (0.35 + 0.16 * assembly_rows))
 as_plotly(p_var, 260 + 8 * (70 + 24 * assembly_rows)) |> layout(margin = list(b = 80))
+}
 ```
 
 **How it was obtained.** In each alignment, every column is compared with the S288C
