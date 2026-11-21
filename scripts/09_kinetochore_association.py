@@ -29,6 +29,7 @@ from centromere.coevo import (cell_label, centromere_variants, haplotype_by_cent
 from centromere.io import load_config, save_tsv
 
 PAIRS = [("CBF1", "cdei"), ("CBF1", "cdeii"), ("CEP3", "cdeiii"), ("NDC10", "cdeiii")]
+MAX_PLOT_STRAINS = 200
 GENE_ORDER = ["CBF1", "CEP3", "NDC10", "CTF13", "SKP1", "CSE4", "SCM3", "MIF2", "OKP1", "AME1"]
 
 # dataviz reference palette (light): categorical slots in fixed order, blue ramp, diverging blue/red
@@ -66,7 +67,10 @@ def plot(genes: pd.DataFrame, cen: pd.DataFrame, strains: list[str], order: list
          formats: list[str], dpi: int) -> None:
     colors = hap_colors(genes)
     g = genes.set_index(["strain", "gene"])
-    c = cen.set_index(["strain", "centromere"])
+    # strains without a locus row for a centromere: a `?` cell (no CDE call)
+    c = cen.set_index(["strain", "centromere"]).reindex(
+        pd.MultiIndex.from_product([strains, order], names=["strain", "centromere"]))
+    c["cde_ok"] = c["cde_ok"].fillna(False).astype(bool)
     panels = [("Kinetochore haplotypes", GENE_ORDER), ("CDEI vs S288C", order),
               ("CDEII length - S288C (bp)", order), ("CDEIII substitutions vs S288C", order)]
     widths = [len(cols) for _, cols in panels]
@@ -165,6 +169,9 @@ def main():
 
     strains = sorted(matrix.index, key=lambda s: tuple(matrix.loc[s, ["CBF1", "CEP3", "NDC10"]]))
     vis = config["visualize"]
+    if len(strains) > MAX_PLOT_STRAINS:   # one row per strain: unreadable, and > 2^16 px at 300 dpi
+        print(f"{len(strains)} strains > {MAX_PLOT_STRAINS}: haplotype matrix figure skipped")
+        return
     plot(genes, cen, strains, order, out / "figures" / "kinetochore_haplotype_matrix",
          vis["formats"], vis["dpi"])
 

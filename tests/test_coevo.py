@@ -58,3 +58,25 @@ def test_haplotype_table_and_strain_matrix():
     assert m.loc["s1", "n_cdei_alt"] == 1 and m.loc["s1", "n_ccg_hit"] == 1
     assert m.loc["s1", "n_cdeii_off_step"] == 1 and m.loc["s2", "n_no_cde_call"] == 1
     assert m.loc["s2", "n_cdei_alt"] == 0 and m.loc["s1", "n_cdei_cacatg"] == 1
+
+
+def test_missing_cde_calls_and_loci():
+    """No sequence (NaN) for a failed call, no CDEII step, and a strain without a locus row."""
+    ref = reference_elements(REF)
+    pre = pd.DataFrame({"strain": ["s1", "s1", "s2"], "centromere": ["CENA", "CENB", "CENA"],
+                        "cdei_seq": ["ATCACATG", float("nan"), "GTCACATG"],
+                        "cdeiii_seq": [REF["CENA"][-26:], float("nan"), REF["CENA"][-26:]],
+                        "cde_ok": [True, False, True]})
+    steps = pd.DataFrame({"strain": ["s1", "s2"], "centromere": ["CENA", "CENA"],
+                          "cdeii_length": [10, 10], "delta_s288c": [0, 0],
+                          "class_s288c": ["within", "within"]})
+    genes = pd.DataFrame({"strain": ["s1", "s2"], "gene": ["CBF1", "CBF1"],
+                          "haplotype": ["H1", "ref"], "status": ["intact", "intact"]})
+    cen = centromere_variants(pre, steps, ref)
+    c = cen.set_index(["strain", "centromere"])
+    assert pd.isna(c.loc[("s1", "CENB"), "cdei_variants"]) and pd.isna(c.loc[("s1", "CENB"), "ccg_hit"])
+    assert cell_label(c.loc[("s1", "CENB")], "cdeii") == "?"         # no CDEII length
+    t = haplotype_by_centromere(cen, genes, "CBF1", "cdei", ["CENA", "CENB"])
+    assert t.loc["s2", "CENB"] == "?"                                  # s2 has no CENB row
+    m = strain_matrix(cen, genes)
+    assert m.loc["s1", "n_no_cde_call"] == 1 and m.loc["s1", "n_cdei_alt"] == 1

@@ -35,11 +35,18 @@ def centromere_variants(pre: pd.DataFrame, steps: pd.DataFrame, ref: pd.DataFram
     vs S288C, whether the CDEIII CCG is hit, CDEII length and its difference / helical-step
     class vs S288C. Rows with a failed CDE call (`cde_ok` False) keep NA for the CDEs."""
     d = pre[["strain", "centromere", "cdei_seq", "cdeiii_seq", "cde_ok"]].merge(ref, on="centromere")
-    d["cdei_core"] = d["cdei_seq"].str[2:8]
-    d["cdei_variants"] = [substitutions(s, r) for s, r in zip(d["cdei_seq"], d["ref_cdei"])]
-    d["cdeiii_variants"] = [substitutions(s, r) for s, r in zip(d["cdeiii_seq"], d["ref_cdeiii"])]
-    d["ccg_hit"] = [any(c != r for c, r in zip(s[p - 1:p + 2], q[p - 1:p + 2]))
-                    for s, q, p in zip(d["cdeiii_seq"], d["ref_cdeiii"], d["ccg_start"])]
+    # a call without both sequences (NaN in the table) counts as failed
+    d["cde_ok"] = (d["cde_ok"].fillna(False).astype(bool)
+                   & d["cdei_seq"].map(lambda x: isinstance(x, str))
+                   & d["cdeiii_seq"].map(lambda x: isinstance(x, str)))
+    ok = d["cde_ok"]
+    d["cdei_core"] = d["cdei_seq"].where(ok).str[2:8]
+    d["cdei_variants"] = [substitutions(s, r) if k else None
+                          for s, r, k in zip(d["cdei_seq"], d["ref_cdei"], ok)]
+    d["cdeiii_variants"] = [substitutions(s, r) if k else None
+                            for s, r, k in zip(d["cdeiii_seq"], d["ref_cdeiii"], ok)]
+    d["ccg_hit"] = [any(c != r for c, r in zip(s[p - 1:p + 2], q[p - 1:p + 2])) if k else None
+                    for s, q, p, k in zip(d["cdeiii_seq"], d["ref_cdeiii"], d["ccg_start"], ok)]
     for c in ("cdei_core", "cdei_variants", "cdeiii_variants", "ccg_hit"):
         d[c] = d[c].astype(object).where(d["cde_ok"])
     s = steps[["strain", "centromere", "cdeii_length", "delta_s288c", "class_s288c"]]
@@ -53,6 +60,8 @@ def cell_label(row: pd.Series, element: str) -> str:
     """Short text for one strain x centromere x element: `.` = as S288C, `?` = no CDE call."""
     if element == "cdeii":
         d = row["delta_s288c"]
+        if pd.isna(d):
+            return "?"
         return "." if d == 0 else f"{int(d):+d}"
     if not row["cde_ok"]:
         return "?"
@@ -65,7 +74,9 @@ def haplotype_by_centromere(cen: pd.DataFrame, haplotypes: pd.DataFrame, gene: s
     `cell_label`. The first two columns are the haplotype and its allele status."""
     h = haplotypes[haplotypes["gene"] == gene].set_index("strain")[["haplotype", "status"]]
     lab = cen.assign(label=[cell_label(r, element) for _, r in cen.iterrows()])
-    wide = lab.pivot(index="strain", columns="centromere", values="label")[order]
+    # a strain without a locus row for a centromere shows `?`
+    wide = (lab.pivot(index="strain", columns="centromere", values="label")
+            .reindex(columns=order).fillna("?"))
     out = h.join(wide, how="inner")
     key = out["haplotype"].map(lambda x: (x != "ref", x))  # ref first, then H1, H2...
     out = out.assign(_k=key).sort_values(["_k"]).drop(columns="_k")
